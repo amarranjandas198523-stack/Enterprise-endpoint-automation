@@ -1,0 +1,45 @@
+---
+# Manage Mobile Devices Tasks via MDM API
+
+- name: Fail if MDM choice is undefined
+  fail:
+    msg: "The variable 'mdm_solution' must be defined (e.g., intune, jamf)"
+  when: mdm_solution is not defined
+
+- name: Sync Mobile Devices via Microsoft Intune API
+  uri:
+    url: "https://graph.microsoft.com/v1.0/deviceManagement/managedDevices/executeAction"
+    method: POST
+    headers:
+      Authorization: "Bearer {{ lookup('env', 'INTUNE_API_TOKEN') }}"
+      Content-Type: "application/json"
+    body_format: json
+    body:
+      actionName: "syncDevice"
+      keepEnrollmentData: true
+      keepUserData: true
+      deviceIds: "{{ mdm_target_device_ids | default([]) }}"
+    status_code: 200, 202
+  register: intune_sync_result
+  ignore_errors: true
+  when: mdm_solution | lower == 'intune'
+
+- name: Sync Mobile Devices via Jamf Pro API
+  uri:
+    url: "https://{{ jamf_instance_url }}/api/v1/mobile-device-commands/command"
+    method: POST
+    headers:
+      Authorization: "Bearer {{ lookup('env', 'JAMF_API_TOKEN') }}"
+      Content-Type: "application/json"
+    body_format: json
+    body:
+      commandType: "UpdateInventory"
+      deviceIds: "{{ mdm_target_device_ids | default([]) }}"
+    status_code: 201, 202
+  register: jamf_sync_result
+  ignore_errors: true
+  when: mdm_solution | lower == 'jamf'
+
+- name: Output MDM Sync Results
+  debug:
+    msg: "Intune Status: {{ intune_sync_result.status | default('Skipped') }}, Jamf Status: {{ jamf_sync_result.status | default('Skipped') }}"

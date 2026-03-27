@@ -1,0 +1,46 @@
+---
+# OS Patching Tasks
+
+- name: OS Patching Tasks - Windows
+  block:
+    - name: Ensure Windows Update service is running
+      win_service:
+        name: wuauserv
+        state: started
+        start_mode: auto
+
+    - name: Search, download, and install all available updates
+      win_updates:
+        category_names:
+          - SecurityUpdates
+          - CriticalUpdates
+          - UpdateRollups
+        state: installed
+      register: win_update_result
+
+    - name: Reboot Windows if necessary
+      win_reboot:
+      when: win_update_result.reboot_required | default(false)
+  when: ansible_os_family == 'Windows'
+
+- name: OS Patching Tasks - macOS
+  block:
+    - name: Run softwareupdate to download and install all updates
+      shell: softwareupdate -i -a
+      register: mac_update_result
+      changed_when: "'Installed' in mac_update_result.stdout"
+      failed_when: "'Error' in mac_update_result.stderr"
+      become: yes
+
+    - name: Check if reboot is required
+      shell: softwareupdate --list
+      register: mac_list_updates
+      changed_when: false
+      failed_when: false
+
+    - name: Reboot macOS if necessary
+      reboot:
+        msg: "Rebooting to apply macOS updates"
+      when: "'restart' in mac_list_updates.stdout | lower or 'restart' in mac_update_result.stdout | lower"
+      become: yes
+  when: ansible_os_family == 'Darwin'

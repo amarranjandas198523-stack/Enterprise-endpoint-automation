@@ -1,0 +1,46 @@
+---
+# Deploy EDR Tasks
+
+- name: Fail if EDR choice is undefined
+  fail:
+    msg: "The variable 'edr_solution' must be defined (e.g., crowdstrike, sentinelone, defender)"
+  when: edr_solution is not defined
+
+- name: Deploy CrowdStrike Falcon
+  block:
+    - name: Windows - Download and Install CrowdStrike
+      win_package:
+        path: "{{ crowdstrike_windows_url }}"
+        arguments: '/install /quiet /norestart CID={{ crowdstrike_cid }}'
+        state: present
+      when: ansible_os_family == 'Windows'
+    - name: macOS - Download and Install CrowdStrike
+      shell: |
+        curl -o /tmp/falcon.pkg "{{ crowdstrike_macos_url }}"
+        installer -pkg /tmp/falcon.pkg -target /
+      become: yes
+      when: ansible_os_family == 'Darwin'
+  when: edr_solution | lower == 'crowdstrike'
+
+- name: Deploy SentinelOne
+  block:
+    - name: Windows - Download and Install SentinelOne
+      win_package:
+        path: "{{ sentinelone_windows_url }}"
+        arguments: '/quiet /norestart SITE_TOKEN={{ sentinelone_site_token }}'
+        state: present
+      when: ansible_os_family == 'Windows'
+    - name: macOS - Download and Install SentinelOne
+      shell: |
+        curl -o /tmp/sentinelone.pkg "{{ sentinelone_macos_url }}"
+        installer -pkg /tmp/sentinelone.pkg -target /
+      become: yes
+      when: ansible_os_family == 'Darwin'
+  when: edr_solution | lower == 'sentinelone'
+
+- name: Manage Windows Defender (Native)
+  block:
+    - name: Ensure Defender is enabled
+      win_shell: Set-MpPreference -DisableRealtimeMonitoring $false
+      when: ansible_os_family == 'Windows'
+  when: edr_solution | lower == 'defender'

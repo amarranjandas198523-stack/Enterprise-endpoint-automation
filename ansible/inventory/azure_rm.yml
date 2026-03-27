@@ -1,0 +1,23 @@
+---
+# Enterprise Azure RM Dynamic Inventory Configuration
+plugin: azure_rm
+
+# Optional: Limit discovery to a specific resource group or subscription
+# resource_group: my_endpoint_rg
+# subscription_id: "your-subscription-id"
+
+# Filter by tags applied via Terraform
+include_vm_resource_groups:
+  - "*"
+conditional_groups:
+  windows_endpoints: "'Windows' in os_profile.system"
+  linux_endpoints: "'Linux' in os_profile.system"
+
+keyed_groups:
+  - prefix: location
+    key: location
+  - prefix: tag
+    key: tags.Role
+
+hostvar_expressions:
+  ansible_host: public_ipv4_addresses[0] if public_ipv4_addresses else private_ipv4_addresses[0]

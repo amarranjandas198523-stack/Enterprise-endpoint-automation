@@ -1,0 +1,28 @@
+---
+# Enterprise AWS EC2 Dynamic Inventory Configuration
+plugin: aws_ec2
+
+# Define regions where your endpoints reside
+regions:
+  - us-east-1
+  - us-west-2
+
+# Define filters based on tags applied via Terraform
+filters:
+  tag:Environment:
+    - Production
+  tag:Role:
+    - Endpoint
+
+# Define groups based on tags for targeted patching and deployment
+keyed_groups:
+  - key: tags.OS
+    prefix: os
+  - key: tags.Environment
+    prefix: env
+  - key: tags.Team
+    prefix: team
+
+# Set connection properties
+compose:
+  ansible_host: public_ip_address # Or private_ip_address depending on network architecture
