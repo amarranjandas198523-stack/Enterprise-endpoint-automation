@@ -139,6 +139,108 @@ function Invoke-GraphRequestWithRetry {
 }
 
 # ==============================================================================
+# State & Delta Management
+# ==============================================================================
+
+# Note: In an Azure Automation environment, Get-AutomationVariable/Set-AutomationVariable
+# cannot be called from within a background job (Runspace). Therefore, we fetch the
+# delta token strings in the main thread and pass them into the jobs.
+
+function Get-DeltaToken {
+    param([string]$StateKey)
+    try {
+        return Get-AutomationVariable -Name "IAM_DeltaToken_$StateKey" -ErrorAction Stop
+    } catch {
+        return $null
+    }
+}
+
+function Set-DeltaToken {
+    param([string]$StateKey, [string]$DeltaUrl)
+    try {
+        $VarName = "IAM_DeltaToken_$StateKey"
+        Set-AutomationVariable -Name $VarName -Value $DeltaUrl -ErrorAction Stop
+    } catch {
+        try {
+            New-AutomationVariable -Name $VarName -Value $DeltaUrl -Encrypted $false -ErrorAction SilentlyContinue
+        } catch {
+            Write-Log "Failed to save delta token for $StateKey." "WARN"
+        }
+    }
+}
+
+function Invoke-GraphDeltaRequestWrapper {
+    param(
+        [Parameter(Mandatory=$true)][string]$BaseUri,
+        [Parameter(Mandatory=$true)][string]$StateKey,
+        [Parameter(Mandatory=$false)][string]$InputDeltaToken
+    )
+    $AllResults = @()
+
+    if ([string]::IsNullOrEmpty($InputDeltaToken)) {
+        Write-Log "No previous delta token found for $StateKey. Performing full extraction..."
+        $CurrentUri = $BaseUri
+    } else {
+        Write-Log "Found previous delta token for $StateKey. Performing delta extraction..."
+        $CurrentUri = $InputDeltaToken
+    }
+
+    $Token = Get-GraphToken
+    $Headers = @{
+        "Authorization" = "Bearer $Token"
+        "Content-Type"  = "application/json"
+    }
+
+    $NewDeltaLink = $null
+
+    while ($null -ne $CurrentUri) {
+        $Global:ApiCallCount++
+        $RetryCount = 0
+        $Success = $false
+
+        while (-not $Success -and $RetryCount -lt 3) {
+            try {
+                $Response = Invoke-RestMethod -Uri $CurrentUri -Headers $Headers -Method GET -ErrorAction Stop
+
+                if ($null -ne $Response.value) {
+                    $AllResults += $Response.value
+                } else {
+                    $AllResults += $Response
+                }
+
+                if ($null -ne $Response.'@odata.nextLink') {
+                    $CurrentUri = $Response.'@odata.nextLink'
+                } elseif ($null -ne $Response.'@odata.deltaLink') {
+                    # End of delta sync. Save the new deltaLink.
+                    $NewDeltaLink = $Response.'@odata.deltaLink'
+                    $CurrentUri = $null
+                } else {
+                    $CurrentUri = $null
+                }
+                $Success = $true
+            } catch {
+                $StatusCode = if ($null -ne $_.Exception.Response) { [int]$_.Exception.Response.StatusCode } else { 0 }
+                if ($StatusCode -eq 429 -or $StatusCode -ge 500 -or $StatusCode -eq 0) {
+                    $WaitTime = if ($StatusCode -eq 429 -and $null -ne $_.Exception.Response.Headers["Retry-After"]) { [int]$_.Exception.Response.Headers["Retry-After"] } else { [math]::Pow(2, $RetryCount) + 1 }
+                    Start-Sleep -Seconds $WaitTime
+                    $RetryCount++
+                } else {
+                    Write-Log "Delta API Request Failed ($StateKey): $($_.Exception.Message)" "ERROR"
+                    throw $_.Exception
+                }
+            }
+        }
+        if (-not $Success) { throw "Delta extraction failed after retries for $StateKey" }
+    }
+
+    # Return both the data and the new token so the main thread can save it
+    return [PSCustomObject]@{
+        Data = $AllResults
+        NewDeltaLink = $NewDeltaLink
+    }
+}
+
+# ==============================================================================
 # Authentication & Token Management
 # ==============================================================================
 
@@ -246,14 +348,16 @@ function Invoke-GraphRequestWithRetryWrapper {
 }
 
 function Get-AppGovernanceMetrics {
-    Write-Log "Extracting App Governance Metrics (Expiring Credentials)..."
+    param([string]$InputDeltaToken)
+    Write-Log "Extracting App Governance Metrics (Expiring Credentials - Delta)..."
 
-    $Uri = "https://graph.microsoft.com/v1.0/servicePrincipals?`$select=id,displayName,appId,passwordCredentials,keyCredentials"
+    $BaseUri = "https://graph.microsoft.com/v1.0/servicePrincipals/delta?`$select=id,displayName,appId,passwordCredentials,keyCredentials"
     $Metrics = @()
     $WarnThresholdDays = 30
 
     try {
-        $ServicePrincipals = Invoke-GraphRequestWithRetryWrapper -Uri $Uri
+        $Result = Invoke-GraphDeltaRequestWrapper -BaseUri $BaseUri -StateKey "AppGov" -InputDeltaToken $InputDeltaToken
+        $ServicePrincipals = $Result.Data
 
         foreach ($Sp in $ServicePrincipals) {
             $Creds = @($Sp.passwordCredentials) + @($Sp.keyCredentials)
@@ -294,7 +398,10 @@ function Get-AppGovernanceMetrics {
             }
         }
         Write-Log "Found $($Metrics.Count) expiring/expired credentials."
-        return $Metrics
+        return [PSCustomObject]@{
+            Data = $Metrics
+            NewDeltaLink = $Result.NewDeltaLink
+        }
     } catch {
         Write-Log "Error extracting App Governance metrics." "ERROR"
         return $null
@@ -302,7 +409,7 @@ function Get-AppGovernanceMetrics {
 }
 
 function Get-PIMRoleDriftMetrics {
-    Write-Log "Extracting PIM Role Drift Metrics (Global Admins)..."
+    Write-Log "Extracting Role Drift Metrics (Global Admins - PIM & Direct)..."
 
     # Targeting Global Administrator role
     $GlobalAdminRoleId = "62e90394-69f5-4237-9190-012177145e10"
@@ -351,10 +458,31 @@ function Get-PIMRoleDriftMetrics {
             }
         }
 
-        Write-Log "Found $($Metrics.Count) PIM schedules for Global Admin."
+        # Fetch Direct (Non-PIM) Shadow Admins
+        $DirectUri = "$BaseUri/roleAssignments?`$filter=roleDefinitionId eq '$GlobalAdminRoleId'&`$expand=principal"
+        $DirectAssignments = Invoke-GraphRequestWithRetryWrapper -Uri $DirectUri
+
+        foreach ($Assignment in $DirectAssignments) {
+            # Skip checking assignments that have a linked PIM scheduleId to avoid duplicates
+            if ($null -eq $Assignment.roleAssignmentScheduleId) {
+                $RecordId = Get-DeterministicHash -InputString "Direct-$($Assignment.id)"
+                $Metrics += [PSCustomObject]@{
+                    RecordId = $RecordId
+                    RiskScore = 100 # Direct Global Admins bypassing PIM is extreme risk
+                    PrincipalName = if ($null -ne $Assignment.principal.displayName) { $Assignment.principal.displayName } else { "Unknown" }
+                    PrincipalId = $Assignment.principalId
+                    RoleName = "Global Administrator"
+                    AssignmentType = "Direct"
+                    IsPermanent = $true
+                    ScheduleId = $Assignment.id
+                }
+            }
+        }
+
+        Write-Log "Found $($Metrics.Count) role assignments (PIM + Direct) for Global Admin."
         return $Metrics
     } catch {
-         Write-Log "Error extracting PIM Role Drift metrics: $($_.Exception.Message)" "ERROR"
+         Write-Log "Error extracting Role Drift metrics: $($_.Exception.Message)" "ERROR"
          return $null
     }
 }
@@ -417,18 +545,21 @@ function Get-RiskyServicePrincipalsMetrics {
 }
 
 function Get-DormantAccountsMetrics {
-    Write-Log "Extracting Dormant Accounts Metrics (>90 days inactive)..."
+    param([string]$InputDeltaToken)
+    Write-Log "Extracting Dormant Accounts Metrics (>90 days inactive - Delta)..."
 
     $ThresholdDate = (Get-Date).AddDays(-90).ToString("yyyy-MM-ddTHH:mm:ssZ")
     # Utilizing signInActivity (requires AuditLog.Read.All and Directory.Read.All)
-    $Uri = "https://graph.microsoft.com/v1.0/users?`$select=id,userPrincipalName,signInActivity,accountEnabled&`$filter=accountEnabled eq true"
+    # Delta endpoints do not support standard $filter operators in some contexts, so we pull delta and filter client side
+    $BaseUri = "https://graph.microsoft.com/v1.0/users/delta?`$select=id,userPrincipalName,signInActivity,accountEnabled"
 
     $Metrics = @()
 
     try {
-        $Users = Invoke-GraphRequestWithRetryWrapper -Uri $Uri
+        $Result = Invoke-GraphDeltaRequestWrapper -BaseUri $BaseUri -StateKey "DormantUsers" -InputDeltaToken $InputDeltaToken
+        $ActiveUsers = $Result.Data | Where-Object { $_.accountEnabled -eq $true }
 
-        foreach ($User in $Users) {
+        foreach ($User in $ActiveUsers) {
             $LastSignIn = $null
             if ($null -ne $User.signInActivity -and $null -ne $User.signInActivity.lastSignInDateTime) {
                 $LastSignIn = $User.signInActivity.lastSignInDateTime
@@ -436,17 +567,16 @@ function Get-DormantAccountsMetrics {
 
             # If they have signed in, and it's older than threshold OR they have never signed in
             if ($null -ne $LastSignIn) {
-                $DaysInactive = ([DateTime]$ThresholdDate - [DateTime]$LastSignIn).Days
-                if ($DaysInactive -gt 0) {
+                $DaysInactive = ((Get-Date) - [DateTime]$LastSignIn).Days
+                if ($DaysInactive -ge 90) {
                      $RecordId = Get-DeterministicHash -InputString "$($User.userPrincipalName)-$LastSignIn"
-                     $TotalInactive = $DaysInactive + 90
-                     $RiskScore = if ($TotalInactive -ge 365) { 90 } elseif ($TotalInactive -ge 180) { 75 } else { 50 }
+                     $RiskScore = if ($DaysInactive -ge 365) { 90 } elseif ($DaysInactive -ge 180) { 75 } else { 50 }
                      $Metrics += [PSCustomObject]@{
                         RecordId = $RecordId
                         RiskScore = $RiskScore
                         UserPrincipalName = $User.userPrincipalName
                         LastSignInDateTime = $LastSignIn
-                        DaysInactive = $TotalInactive
+                        DaysInactive = $DaysInactive
                      }
                 }
             } else {
@@ -462,7 +592,10 @@ function Get-DormantAccountsMetrics {
             }
         }
         Write-Log "Found $($Metrics.Count) active but dormant accounts."
-        return $Metrics
+        return [PSCustomObject]@{
+            Data = $Metrics
+            NewDeltaLink = $Result.NewDeltaLink
+        }
     } catch {
         Write-Log "Error extracting Dormant Account metrics: $($_.Exception.Message)" "ERROR"
         return $null
@@ -470,13 +603,15 @@ function Get-DormantAccountsMetrics {
 }
 
 function Get-GuestUserRiskMetrics {
-    Write-Log "Extracting Guest/External User Metrics..."
+    param([string]$InputDeltaToken)
+    Write-Log "Extracting Guest/External User Metrics (Delta)..."
 
-    $Uri = "https://graph.microsoft.com/v1.0/users?`$filter=userType eq 'Guest'&`$select=id,userPrincipalName,createdDateTime,accountEnabled"
+    $BaseUri = "https://graph.microsoft.com/v1.0/users/delta?`$select=id,userPrincipalName,createdDateTime,accountEnabled,userType"
     $Metrics = @()
 
     try {
-        $Guests = Invoke-GraphRequestWithRetryWrapper -Uri $Uri
+        $Result = Invoke-GraphDeltaRequestWrapper -BaseUri $BaseUri -StateKey "GuestUsers" -InputDeltaToken $InputDeltaToken
+        $Guests = $Result.Data | Where-Object { $_.userType -eq 'Guest' }
 
         foreach ($Guest in $Guests) {
             $RecordId = Get-DeterministicHash -InputString "$($Guest.userPrincipalName)-$($Guest.accountEnabled)"
@@ -490,7 +625,10 @@ function Get-GuestUserRiskMetrics {
             }
         }
         Write-Log "Found $($Metrics.Count) guest users."
-        return $Metrics
+        return [PSCustomObject]@{
+            Data = $Metrics
+            NewDeltaLink = $Result.NewDeltaLink
+        }
     } catch {
         Write-Log "Error extracting Guest User metrics: $($_.Exception.Message)" "ERROR"
         return $null
@@ -563,15 +701,21 @@ function Get-TokenLifetimePoliciesMetrics {
         Write-Log "Found $($Metrics.Count) token lifetime policies."
         return $Metrics
     } catch {
-        Write-Log "Error extracting Token Lifetime Policy metrics: $($_.Exception.Message)" "ERROR"
-        return $null
+        $ExMsg = $_.Exception.Message
+        if ($ExMsg -match "404" -or $ExMsg -match "ResourceNotFound") {
+            Write-Log "Token Lifetime Policy endpoint deprecated or unavailable in this tenant. Returning empty." "WARN"
+            return @()
+        } else {
+            Write-Log "Error extracting Token Lifetime Policy metrics: $ExMsg" "ERROR"
+            return $null
+        }
     }
 }
 
 function Get-ConditionalAccessMetrics {
     Write-Log "Extracting Conditional Access Policy Status..."
 
-    $Uri = "https://graph.microsoft.com/v1.0/identity/conditionalAccess/policies?`$select=id,displayName,state,conditions"
+    $Uri = "https://graph.microsoft.com/v1.0/identity/conditionalAccess/policies?`$select=id,displayName,state,conditions,createdDateTime"
     $Metrics = @()
 
     try {
@@ -638,8 +782,13 @@ function Send-DataToLogAnalytics {
         }
     }
 
+    # Create a wrapper array to explicitly ensure the JSON output is always an array,
+    # as DCR Logs Ingestion API strictly requires an array of objects.
+    $ArrayWrapper = @()
+    $ArrayWrapper += $JsonData
+
     # Use -InputObject to prevent PowerShell from unrolling single-item arrays
-    $LogData = ConvertTo-Json -InputObject $JsonData -Depth 10 -Compress
+    $LogData = ConvertTo-Json -InputObject $ArrayWrapper -Depth 10 -Compress
 
     $Uri = "$DceUri/dataCollectionRules/$DcrImmutableId/streams/Custom-${StreamName}?api-version=2023-01-01"
 
@@ -698,19 +847,121 @@ try {
     # 2. Validate Permissions (Fail Fast)
     Validate-GraphPermissions
 
-    # 3. Extract Data
+    # 3. Extract Data (Parallel Execution for Scale via Background Jobs)
     $StartTime = Get-Date
-    $AppGovData = Get-AppGovernanceMetrics
-    $PimData = Get-PIMRoleDriftMetrics
-    $IdpData = Get-IdentityProtectionMetrics
-    $IdpSpData = Get-RiskyServicePrincipalsMetrics
-    $CaData = Get-ConditionalAccessMetrics
-    $DormantData = Get-DormantAccountsMetrics
-    $GuestData = Get-GuestUserRiskMetrics
-    $ConsentData = Get-AppConsentAnomaliesMetrics
-    $TokenPoliciesData = Get-TokenLifetimePoliciesMetrics
+    Write-Log "Starting parallel extraction jobs..."
 
-    # 4. Push to Azure Monitor via DCR
+    # Pre-fetch delta tokens in the main thread (since Automation variables fail in background jobs)
+    $GuestDeltaToken = Get-DeltaToken -StateKey "GuestUsers"
+    $DormantDeltaToken = Get-DeltaToken -StateKey "DormantUsers"
+    $AppGovDeltaToken = Get-DeltaToken -StateKey "AppGov"
+
+    $Jobs = @()
+
+    # Pass everything via the core ScriptBlock and ArgumentList to avoid runspace scoping bugs
+    $JobBlock = {
+        param($PassedFuncDefs, $PassedCorrelationId, $JobName, $DeltaToken)
+
+        $Global:RunCorrelationId = $PassedCorrelationId
+        $Global:ApiCallCount = 0
+
+        # Inject helper functions into the local runspace
+        Set-Item -Path function:Get-GraphToken -Value $PassedFuncDefs.GetGraphToken
+        Set-Item -Path function:Get-ManagedIdentityToken -Value $PassedFuncDefs.GetManagedIdentityToken
+        Set-Item -Path function:Invoke-GraphRequestWithRetryWrapper -Value $PassedFuncDefs.InvokeGraphRequestWithRetryWrapper
+        Set-Item -Path function:Invoke-GraphRequestWithRetry -Value $PassedFuncDefs.InvokeGraphRequestWithRetry
+        Set-Item -Path function:Get-DeterministicHash -Value $PassedFuncDefs.GetDeterministicHash
+        Set-Item -Path function:Write-Log -Value $PassedFuncDefs.WriteLog
+        Set-Item -Path function:Invoke-GraphDeltaRequestWrapper -Value $PassedFuncDefs.InvokeGraphDeltaRequestWrapper
+
+        Set-Item -Path function:Get-AppGovernanceMetrics -Value $PassedFuncDefs.GetAppGovernanceMetrics
+        Set-Item -Path function:Get-PIMRoleDriftMetrics -Value $PassedFuncDefs.GetPIMRoleDriftMetrics
+        Set-Item -Path function:Get-IdentityProtectionMetrics -Value $PassedFuncDefs.GetIdentityProtectionMetrics
+        Set-Item -Path function:Get-RiskyServicePrincipalsMetrics -Value $PassedFuncDefs.GetRiskyServicePrincipalsMetrics
+        Set-Item -Path function:Get-ConditionalAccessMetrics -Value $PassedFuncDefs.GetConditionalAccessMetrics
+        Set-Item -Path function:Get-DormantAccountsMetrics -Value $PassedFuncDefs.GetDormantAccountsMetrics
+        Set-Item -Path function:Get-GuestUserRiskMetrics -Value $PassedFuncDefs.GetGuestUserRiskMetrics
+        Set-Item -Path function:Get-AppConsentAnomaliesMetrics -Value $PassedFuncDefs.GetAppConsentAnomaliesMetrics
+        Set-Item -Path function:Get-TokenLifetimePoliciesMetrics -Value $PassedFuncDefs.GetTokenLifetimePoliciesMetrics
+
+        # Execute the requested metric extraction
+        switch ($JobName) {
+            "AppGov" { return Get-AppGovernanceMetrics -InputDeltaToken $DeltaToken }
+            "PIM" { return Get-PIMRoleDriftMetrics }
+            "IDP" { return Get-IdentityProtectionMetrics }
+            "IDPSP" { return Get-RiskyServicePrincipalsMetrics }
+            "CA" { return Get-ConditionalAccessMetrics }
+            "Dormant" { return Get-DormantAccountsMetrics -InputDeltaToken $DeltaToken }
+            "Guest" { return Get-GuestUserRiskMetrics -InputDeltaToken $DeltaToken }
+            "Consent" { return Get-AppConsentAnomaliesMetrics }
+            "TokenPolicy" { return Get-TokenLifetimePoliciesMetrics }
+        }
+    }
+
+    # Package all functions safely into a hashtable of ScriptBlocks
+    $FuncDefs = @{
+        GetGraphToken = ${function:Get-GraphToken}
+        GetManagedIdentityToken = ${function:Get-ManagedIdentityToken}
+        InvokeGraphRequestWithRetryWrapper = ${function:Invoke-GraphRequestWithRetryWrapper}
+        InvokeGraphRequestWithRetry = ${function:Invoke-GraphRequestWithRetry}
+        GetDeterministicHash = ${function:Get-DeterministicHash}
+        WriteLog = ${function:Write-Log}
+        InvokeGraphDeltaRequestWrapper = ${function:Invoke-GraphDeltaRequestWrapper}
+        GetAppGovernanceMetrics = ${function:Get-AppGovernanceMetrics}
+        GetPIMRoleDriftMetrics = ${function:Get-PIMRoleDriftMetrics}
+        GetIdentityProtectionMetrics = ${function:Get-IdentityProtectionMetrics}
+        GetRiskyServicePrincipalsMetrics = ${function:Get-RiskyServicePrincipalsMetrics}
+        GetConditionalAccessMetrics = ${function:Get-ConditionalAccessMetrics}
+        GetDormantAccountsMetrics = ${function:Get-DormantAccountsMetrics}
+        GetGuestUserRiskMetrics = ${function:Get-GuestUserRiskMetrics}
+        GetAppConsentAnomaliesMetrics = ${function:Get-AppConsentAnomaliesMetrics}
+        GetTokenLifetimePoliciesMetrics = ${function:Get-TokenLifetimePoliciesMetrics}
+    }
+
+    $Jobs += Start-Job -ScriptBlock $JobBlock -ArgumentList $FuncDefs, $Global:RunCorrelationId, "AppGov", $AppGovDeltaToken
+    $Jobs += Start-Job -ScriptBlock $JobBlock -ArgumentList $FuncDefs, $Global:RunCorrelationId, "PIM", $null
+    $Jobs += Start-Job -ScriptBlock $JobBlock -ArgumentList $FuncDefs, $Global:RunCorrelationId, "IDP", $null
+    $Jobs += Start-Job -ScriptBlock $JobBlock -ArgumentList $FuncDefs, $Global:RunCorrelationId, "IDPSP", $null
+    $Jobs += Start-Job -ScriptBlock $JobBlock -ArgumentList $FuncDefs, $Global:RunCorrelationId, "CA", $null
+    $Jobs += Start-Job -ScriptBlock $JobBlock -ArgumentList $FuncDefs, $Global:RunCorrelationId, "Dormant", $DormantDeltaToken
+    $Jobs += Start-Job -ScriptBlock $JobBlock -ArgumentList $FuncDefs, $Global:RunCorrelationId, "Guest", $GuestDeltaToken
+    $Jobs += Start-Job -ScriptBlock $JobBlock -ArgumentList $FuncDefs, $Global:RunCorrelationId, "Consent", $null
+    $Jobs += Start-Job -ScriptBlock $JobBlock -ArgumentList $FuncDefs, $Global:RunCorrelationId, "TokenPolicy", $null
+
+    Wait-Job -Job $Jobs | Out-Null
+
+    # Retrieve data from jobs
+    $AppGovDataResult = Receive-Job -Job $Jobs[0]
+    $PimData = Receive-Job -Job $Jobs[1]
+    $IdpData = Receive-Job -Job $Jobs[2]
+    $IdpSpData = Receive-Job -Job $Jobs[3]
+    $CaData = Receive-Job -Job $Jobs[4]
+    $DormantDataResult = Receive-Job -Job $Jobs[5]
+    $GuestDataResult = Receive-Job -Job $Jobs[6]
+    $ConsentData = Receive-Job -Job $Jobs[7]
+    $TokenPoliciesData = Receive-Job -Job $Jobs[8]
+
+    # Save any new delta tokens from the main thread
+    if ($null -ne $AppGovDataResult -and $null -ne $AppGovDataResult.NewDeltaLink) { Set-DeltaToken -StateKey "AppGov" -DeltaUrl $AppGovDataResult.NewDeltaLink }
+    if ($null -ne $DormantDataResult -and $null -ne $DormantDataResult.NewDeltaLink) { Set-DeltaToken -StateKey "DormantUsers" -DeltaUrl $DormantDataResult.NewDeltaLink }
+    if ($null -ne $GuestDataResult -and $null -ne $GuestDataResult.NewDeltaLink) { Set-DeltaToken -StateKey "GuestUsers" -DeltaUrl $GuestDataResult.NewDeltaLink }
+
+    $AppGovData = if ($null -ne $AppGovDataResult) { $AppGovDataResult.Data } else { $null }
+    $DormantData = if ($null -ne $DormantDataResult) { $DormantDataResult.Data } else { $null }
+    $GuestData = if ($null -ne $GuestDataResult) { $GuestDataResult.Data } else { $null }
+
+    # Clean up jobs
+    Remove-Job -Job $Jobs
+
+    # 4. Normalize Risk Scores
+    # Apply global normalization weights based on domain criticality
+    # Identity Risk = 1.4x, PIM = 1.5x, App Consent = 1.3x
+    if ($null -ne $IdpData) { foreach ($i in $IdpData) { $i.RiskScore = [math]::Min(100, $i.RiskScore * 1.4) } }
+    if ($null -ne $IdpSpData) { foreach ($i in $IdpSpData) { $i.RiskScore = [math]::Min(100, $i.RiskScore * 1.4) } }
+    if ($null -ne $PimData) { foreach ($i in $PimData) { $i.RiskScore = [math]::Min(100, $i.RiskScore * 1.5) } }
+    if ($null -ne $ConsentData) { foreach ($i in $ConsentData) { $i.RiskScore = [math]::Min(100, $i.RiskScore * 1.3) } }
+
+    # 5. Push to Azure Monitor via DCR
     # We dynamically fetch Monitor token inside Send-DataToLogAnalytics logic or here to ensure it isn't expired on long runs
     Send-DataToLogAnalytics -DceUri $DceUri -DcrImmutableId $DcrImmutableId -StreamName "IAM_AppGovernance_CL" -MonitorToken (Get-AzureMonitorToken) -JsonData $AppGovData
     Send-DataToLogAnalytics -DceUri $DceUri -DcrImmutableId $DcrImmutableId -StreamName "IAM_PIMRoleDrift_CL" -MonitorToken (Get-AzureMonitorToken) -JsonData $PimData

@@ -44,26 +44,27 @@ resource "azurerm_management_lock" "rg_lock" {
   notes      = "Enterprise IAM Reporting Resource Group is protected from accidental deletion."
 }
 
-# In an enterprise, you'd forward Entra ID native logs to Log Analytics
-# data "azurerm_client_config" "current" {}
-# resource "azurerm_monitor_diagnostic_setting" "entra_logs" {
-#   name                       = "diag-entra-to-law-${var.environment}"
-#   target_resource_id         = "/providers/microsoft.aadiam" # Entra ID tenant level
-#   log_analytics_workspace_id = azurerm_log_analytics_workspace.iam_reporting_law.id
-#
-#   enabled_log {
-#     category = "SignInLogs"
-#   }
-#   enabled_log {
-#     category = "AuditLogs"
-#   }
-#   enabled_log {
-#     category = "NonInteractiveUserSignInLogs"
-#   }
-#   enabled_log {
-#     category = "ServicePrincipalSignInLogs"
-#   }
-# }
+# Forward Entra ID native logs to Log Analytics to capture core IAM telemetry
+data "azurerm_client_config" "current" {}
+
+resource "azurerm_monitor_diagnostic_setting" "entra_logs" {
+  name                       = "diag-entra-to-law-${var.environment}"
+  target_resource_id         = "/providers/microsoft.aadiam" # Entra ID tenant level
+  log_analytics_workspace_id = azurerm_log_analytics_workspace.iam_reporting_law.id
+
+  enabled_log {
+    category = "SignInLogs"
+  }
+  enabled_log {
+    category = "AuditLogs"
+  }
+  enabled_log {
+    category = "NonInteractiveUserSignInLogs"
+  }
+  enabled_log {
+    category = "ServicePrincipalSignInLogs"
+  }
+}
 
 resource "azurerm_monitor_data_collection_endpoint" "iam_reporting_dce" {
   name                = "dce-iam-reporting-${var.environment}-${var.location_prefix}"
@@ -210,6 +211,10 @@ resource "azurerm_monitor_data_collection_rule" "iam_reporting_dcr" {
       type = "datetime"
     }
     column {
+      name = "SchemaVersion"
+      type = "string"
+    }
+    column {
       name = "IngestedAt"
       type = "datetime"
     }
@@ -252,6 +257,10 @@ resource "azurerm_monitor_data_collection_rule" "iam_reporting_dcr" {
     column {
       name = "TimeGenerated"
       type = "datetime"
+    }
+    column {
+      name = "SchemaVersion"
+      type = "string"
     }
     column {
       name = "IngestedAt"
@@ -298,6 +307,10 @@ resource "azurerm_monitor_data_collection_rule" "iam_reporting_dcr" {
       type = "datetime"
     }
     column {
+      name = "SchemaVersion"
+      type = "string"
+    }
+    column {
       name = "IngestedAt"
       type = "datetime"
     }
@@ -332,6 +345,10 @@ resource "azurerm_monitor_data_collection_rule" "iam_reporting_dcr" {
     column {
       name = "TimeGenerated"
       type = "datetime"
+    }
+    column {
+      name = "SchemaVersion"
+      type = "string"
     }
     column {
       name = "IngestedAt"
@@ -374,6 +391,10 @@ resource "azurerm_monitor_data_collection_rule" "iam_reporting_dcr" {
       type = "datetime"
     }
     column {
+      name = "SchemaVersion"
+      type = "string"
+    }
+    column {
       name = "IngestedAt"
       type = "datetime"
     }
@@ -410,6 +431,10 @@ resource "azurerm_monitor_data_collection_rule" "iam_reporting_dcr" {
       type = "datetime"
     }
     column {
+      name = "SchemaVersion"
+      type = "string"
+    }
+    column {
       name = "IngestedAt"
       type = "datetime"
     }
@@ -442,6 +467,10 @@ resource "azurerm_monitor_data_collection_rule" "iam_reporting_dcr" {
       type = "datetime"
     }
     column {
+      name = "SchemaVersion"
+      type = "string"
+    }
+    column {
       name = "IngestedAt"
       type = "datetime"
     }
@@ -472,6 +501,10 @@ resource "azurerm_monitor_data_collection_rule" "iam_reporting_dcr" {
     column {
       name = "TimeGenerated"
       type = "datetime"
+    }
+    column {
+      name = "SchemaVersion"
+      type = "string"
     }
     column {
       name = "IngestedAt"
@@ -512,6 +545,10 @@ resource "azurerm_monitor_data_collection_rule" "iam_reporting_dcr" {
     column {
       name = "TimeGenerated"
       type = "datetime"
+    }
+    column {
+      name = "SchemaVersion"
+      type = "string"
     }
     column {
       name = "IngestedAt"
@@ -566,6 +603,50 @@ resource "azurerm_role_assignment" "aa_dcr_data_sender" {
   scope                = azurerm_monitor_data_collection_rule.iam_reporting_dcr.id
   role_definition_name = "Monitoring Data Sender"
   principal_id         = azurerm_automation_account.iam_reporting_aa.identity[0].principal_id
+}
+
+# ---------------------------------------------------------------------------------------------------------------------
+# Active Security / Alerting Layer
+# ---------------------------------------------------------------------------------------------------------------------
+
+resource "azurerm_monitor_action_group" "security_ops" {
+  name                = "ag-iam-security-ops"
+  resource_group_name = azurerm_resource_group.iam_reporting_rg.name
+  short_name          = "SecOpsIAM"
+
+  # In production, replace with variables
+  email_receiver {
+    name                    = "security-team"
+    email_address           = "soc@yourdomain.com"
+    use_common_alert_schema = true
+  }
+}
+
+resource "azurerm_monitor_scheduled_query_rules_alert_v2" "high_risk_iam_alert" {
+  name                = "alert-iam-high-risk-events"
+  resource_group_name = azurerm_resource_group.iam_reporting_rg.name
+  location            = azurerm_resource_group.iam_reporting_rg.location
+  scopes              = [azurerm_log_analytics_workspace.iam_reporting_law.id]
+  description         = "Triggers when any extracted IAM metric returns a RiskScore >= 90."
+  severity            = 1
+  evaluation_frequency = "PT15M"
+  window_duration      = "PT15M"
+
+  criteria {
+    query                   = <<-KQL
+      union IAM_IdentityProtection_CL, IAM_PIMRoleDrift_CL, IAM_AppGovernance_CL, IAM_ConditionalAccess_CL, IAM_RiskyServicePrincipals_CL, IAM_DormantAccounts_CL, IAM_GuestUserRisk_CL, IAM_AppConsentAnomalies_CL
+      | where RiskScore >= 90
+    KQL
+    time_aggregation_method = "Count"
+    operator                = "GreaterThan"
+    threshold               = 0
+  }
+
+  action {
+    action_groups = [azurerm_monitor_action_group.security_ops.id]
+  }
+
+  tags = var.tags
 }
 
 # Note: Granting the Managed Identity Microsoft Graph API permissions (Directory.Read.All, AuditLog.Read.All, etc.)
