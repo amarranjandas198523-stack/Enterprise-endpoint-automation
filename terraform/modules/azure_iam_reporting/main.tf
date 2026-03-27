@@ -62,6 +62,42 @@ resource "azurerm_log_analytics_workspace_table" "idp_table" {
   plan         = "Analytics"
 }
 
+resource "azurerm_log_analytics_workspace_table" "idp_sp_table" {
+  workspace_id = azurerm_log_analytics_workspace.iam_reporting_law.id
+  name         = "IAM_RiskyServicePrincipals_CL"
+  plan         = "Analytics"
+}
+
+resource "azurerm_log_analytics_workspace_table" "ca_table" {
+  workspace_id = azurerm_log_analytics_workspace.iam_reporting_law.id
+  name         = "IAM_ConditionalAccess_CL"
+  plan         = "Analytics"
+}
+
+resource "azurerm_log_analytics_workspace_table" "dormant_table" {
+  workspace_id = azurerm_log_analytics_workspace.iam_reporting_law.id
+  name         = "IAM_DormantAccounts_CL"
+  plan         = "Analytics"
+}
+
+resource "azurerm_log_analytics_workspace_table" "guest_table" {
+  workspace_id = azurerm_log_analytics_workspace.iam_reporting_law.id
+  name         = "IAM_GuestUserRisk_CL"
+  plan         = "Analytics"
+}
+
+resource "azurerm_log_analytics_workspace_table" "consent_table" {
+  workspace_id = azurerm_log_analytics_workspace.iam_reporting_law.id
+  name         = "IAM_AppConsentAnomalies_CL"
+  plan         = "Analytics"
+}
+
+resource "azurerm_log_analytics_workspace_table" "token_table" {
+  workspace_id = azurerm_log_analytics_workspace.iam_reporting_law.id
+  name         = "IAM_TokenLifetimePolicies_CL"
+  plan         = "Analytics"
+}
+
 resource "azurerm_monitor_data_collection_rule" "iam_reporting_dcr" {
   name                        = "dcr-iam-reporting-prod"
   resource_group_name         = azurerm_resource_group.iam_reporting_rg.name
@@ -97,11 +133,57 @@ resource "azurerm_monitor_data_collection_rule" "iam_reporting_dcr" {
     output_stream = "Custom-IAM_IdentityProtection_CL"
   }
 
+  data_flow {
+    streams      = ["Custom-IAM_RiskyServicePrincipals_CL"]
+    destinations = ["law-destination"]
+    transform_kql = "source"
+    output_stream = "Custom-IAM_RiskyServicePrincipals_CL"
+  }
+
+  data_flow {
+    streams      = ["Custom-IAM_ConditionalAccess_CL"]
+    destinations = ["law-destination"]
+    transform_kql = "source"
+    output_stream = "Custom-IAM_ConditionalAccess_CL"
+  }
+
+  data_flow {
+    streams      = ["Custom-IAM_DormantAccounts_CL"]
+    destinations = ["law-destination"]
+    transform_kql = "source"
+    output_stream = "Custom-IAM_DormantAccounts_CL"
+  }
+
+  data_flow {
+    streams      = ["Custom-IAM_GuestUserRisk_CL"]
+    destinations = ["law-destination"]
+    transform_kql = "source"
+    output_stream = "Custom-IAM_GuestUserRisk_CL"
+  }
+
+  data_flow {
+    streams      = ["Custom-IAM_AppConsentAnomalies_CL"]
+    destinations = ["law-destination"]
+    transform_kql = "source"
+    output_stream = "Custom-IAM_AppConsentAnomalies_CL"
+  }
+
+  data_flow {
+    streams      = ["Custom-IAM_TokenLifetimePolicies_CL"]
+    destinations = ["law-destination"]
+    transform_kql = "source"
+    output_stream = "Custom-IAM_TokenLifetimePolicies_CL"
+  }
+
   stream_declaration {
     stream_name = "Custom-IAM_AppGovernance_CL"
     column {
       name = "TimeGenerated"
       type = "datetime"
+    }
+    column {
+      name = "RecordId"
+      type = "string"
     }
     column {
       name = "AppId"
@@ -136,6 +218,10 @@ resource "azurerm_monitor_data_collection_rule" "iam_reporting_dcr" {
       type = "datetime"
     }
     column {
+      name = "RecordId"
+      type = "string"
+    }
+    column {
       name = "PrincipalName"
       type = "string"
     }
@@ -155,6 +241,10 @@ resource "azurerm_monitor_data_collection_rule" "iam_reporting_dcr" {
       name = "IsPermanent"
       type = "boolean"
     }
+    column {
+      name = "ScheduleId"
+      type = "string"
+    }
   }
 
   stream_declaration {
@@ -162,6 +252,10 @@ resource "azurerm_monitor_data_collection_rule" "iam_reporting_dcr" {
     column {
       name = "TimeGenerated"
       type = "datetime"
+    }
+    column {
+      name = "RecordId"
+      type = "string"
     }
     column {
       name = "UserPrincipalName"
@@ -178,6 +272,174 @@ resource "azurerm_monitor_data_collection_rule" "iam_reporting_dcr" {
     column {
       name = "RiskLastUpdatedDateTime"
       type = "datetime"
+    }
+  }
+
+  stream_declaration {
+    stream_name = "Custom-IAM_RiskyServicePrincipals_CL"
+    column {
+      name = "TimeGenerated"
+      type = "datetime"
+    }
+    column {
+      name = "RecordId"
+      type = "string"
+    }
+    column {
+      name = "AppId"
+      type = "string"
+    }
+    column {
+      name = "DisplayName"
+      type = "string"
+    }
+    column {
+      name = "RiskLevel"
+      type = "string"
+    }
+    column {
+      name = "RiskDetail"
+      type = "string"
+    }
+    column {
+      name = "RiskLastUpdatedDateTime"
+      type = "datetime"
+    }
+  }
+
+  stream_declaration {
+    stream_name = "Custom-IAM_ConditionalAccess_CL"
+    column {
+      name = "TimeGenerated"
+      type = "datetime"
+    }
+    column {
+      name = "RecordId"
+      type = "string"
+    }
+    column {
+      name = "PolicyName"
+      type = "string"
+    }
+    column {
+      name = "State"
+      type = "string"
+    }
+    column {
+      name = "HasExceptions"
+      type = "boolean"
+    }
+    column {
+      name = "CreatedDateTime"
+      type = "datetime"
+    }
+  }
+
+  stream_declaration {
+    stream_name = "Custom-IAM_DormantAccounts_CL"
+    column {
+      name = "TimeGenerated"
+      type = "datetime"
+    }
+    column {
+      name = "RecordId"
+      type = "string"
+    }
+    column {
+      name = "UserPrincipalName"
+      type = "string"
+    }
+    column {
+      name = "LastSignInDateTime"
+      type = "datetime"
+    }
+    column {
+      name = "DaysInactive"
+      type = "int"
+    }
+  }
+
+  stream_declaration {
+    stream_name = "Custom-IAM_GuestUserRisk_CL"
+    column {
+      name = "TimeGenerated"
+      type = "datetime"
+    }
+    column {
+      name = "RecordId"
+      type = "string"
+    }
+    column {
+      name = "UserPrincipalName"
+      type = "string"
+    }
+    column {
+      name = "AccountEnabled"
+      type = "boolean"
+    }
+    column {
+      name = "CreatedDateTime"
+      type = "datetime"
+    }
+  }
+
+  stream_declaration {
+    stream_name = "Custom-IAM_AppConsentAnomalies_CL"
+    column {
+      name = "TimeGenerated"
+      type = "datetime"
+    }
+    column {
+      name = "RecordId"
+      type = "string"
+    }
+    column {
+      name = "GrantId"
+      type = "string"
+    }
+    column {
+      name = "ClientId"
+      type = "string"
+    }
+    column {
+      name = "PrincipalId"
+      type = "string"
+    }
+    column {
+      name = "ConsentType"
+      type = "string"
+    }
+    column {
+      name = "HighRiskScopes"
+      type = "string"
+    }
+  }
+
+  stream_declaration {
+    stream_name = "Custom-IAM_TokenLifetimePolicies_CL"
+    column {
+      name = "TimeGenerated"
+      type = "datetime"
+    }
+    column {
+      name = "RecordId"
+      type = "string"
+    }
+    column {
+      name = "PolicyId"
+      type = "string"
+    }
+    column {
+      name = "DisplayName"
+      type = "string"
+    }
+    column {
+      name = "IsOrganizationDefault"
+      type = "boolean"
+    }
+    column {
+      name = "Definition"
+      type = "string"
     }
   }
 }

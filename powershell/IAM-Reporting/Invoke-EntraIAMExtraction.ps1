@@ -33,14 +33,20 @@ param()
 # Helper Functions
 # ==============================================================================
 
+$Global:RunCorrelationId = [guid]::NewGuid().ToString()
+
 function Write-Log {
     param(
         [Parameter(Mandatory=$true)][string]$Message,
         [Parameter(Mandatory=$false)][ValidateSet("INFO", "WARN", "ERROR")][string]$Level = "INFO"
     )
-    $Timestamp = (Get-Date).ToString("yyyy-MM-dd HH:mm:ssZ")
-    $LogMessage = "[$Timestamp] [$Level] $Message"
-    Write-Output $LogMessage
+    $LogData = @{
+        Timestamp     = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")
+        Level         = $Level
+        CorrelationId = $Global:RunCorrelationId
+        Message       = $Message
+    }
+    Write-Output ($LogData | ConvertTo-Json -Compress)
 }
 
 function Invoke-GraphRequestWithRetry {
@@ -96,7 +102,14 @@ function Invoke-GraphRequestWithRetry {
                 if ($StatusCode -eq 429) {
                     # Handle Throttling (Too Many Requests)
                     $RetryAfter = $Exception.Response.Headers["Retry-After"]
-                    $WaitTime = if ([int]::TryParse($RetryAfter, [ref]$null)) { [int]$RetryAfter } else { [math]::Pow(2, $RetryCount) + 1 }
+
+                    [int]$ParsedWaitTime = 0
+                    if ([int]::TryParse($RetryAfter, [ref]$ParsedWaitTime)) {
+                        $WaitTime = $ParsedWaitTime
+                    } else {
+                        $WaitTime = [math]::Pow(2, $RetryCount) + 1
+                    }
+
                     Write-Log "Graph API Throttled (429). Retrying in $WaitTime seconds..." "WARN"
                     Start-Sleep -Seconds $WaitTime
                     $RetryCount++
@@ -122,33 +135,84 @@ function Invoke-GraphRequestWithRetry {
 }
 
 # ==============================================================================
-# Authentication
+# Authentication & Token Management
 # ==============================================================================
 
 function Connect-EntraUsingManagedIdentity {
-    Write-Log "Attempting to authenticate using System-Assigned Managed Identity..."
-    try {
-        # Endpoint for Azure Automation Managed Identity
-        $Resource = "https://graph.microsoft.com/"
-        $Endpoint = $env:IDENTITY_ENDPOINT
-        $Header = $env:IDENTITY_HEADER
+    # Stub for backward compatibility if ever called directly from another module
+    return Get-GraphToken
+}
 
-        if ([string]::IsNullOrEmpty($Endpoint) -or [string]::IsNullOrEmpty($Header)) {
-            Write-Log "Managed Identity endpoint variables not found. Attempting generic IMDS endpoint (for testing on VMs)..." "WARN"
-            # Fallback to IMDS if running on a VM instead of Azure Automation
-            $Response = Invoke-RestMethod -Uri 'http://169.254.169.254/metadata/identity/oauth2/token?api-version=2018-02-01&resource=https%3A%2F%2Fgraph.microsoft.com%2F' -Headers @{Metadata="true"} -Method Get
-            $Token = $Response.access_token
-        } else {
-            # Running in Azure Automation
-            $Response = Invoke-RestMethod -Method Get -Uri "$Endpoint`?resource=$Resource&api-version=2019-08-01" -Headers @{ "X-IDENTITY-HEADER" = $Header }
-            $Token = $Response.access_token
+$Global:GraphToken = $null
+$Global:GraphTokenExpiry = $null
+$Global:MonitorToken = $null
+$Global:MonitorTokenExpiry = $null
+
+function Get-ManagedIdentityToken {
+    param([string]$ResourceUrl)
+
+    $Endpoint = $env:IDENTITY_ENDPOINT
+    $Header = $env:IDENTITY_HEADER
+
+    if ([string]::IsNullOrEmpty($Endpoint) -or [string]::IsNullOrEmpty($Header)) {
+        Write-Log "Using IMDS for Managed Identity ($ResourceUrl)..."
+        $Response = Invoke-RestMethod -Uri "http://169.254.169.254/metadata/identity/oauth2/token?api-version=2018-02-01&resource=$ResourceUrl" -Headers @{Metadata="true"} -Method Get
+    } else {
+        $Response = Invoke-RestMethod -Method Get -Uri "$Endpoint`?resource=$ResourceUrl&api-version=2019-08-01" -Headers @{ "X-IDENTITY-HEADER" = $Header }
+    }
+
+    return [PSCustomObject]@{
+        Token = $Response.access_token
+        # Standard Oauth response usually has expires_on (epoch time)
+        ExpiresOn = [DateTimeOffset]::FromUnixTimeSeconds($Response.expires_on).UtcDateTime
+    }
+}
+
+function Get-GraphToken {
+    if ($null -eq $Global:GraphToken -or (Get-Date).ToUniversalTime() -ge $Global:GraphTokenExpiry.AddMinutes(-5)) {
+        Write-Log "Acquiring/Refreshing Microsoft Graph access token..."
+        try {
+            $Result = Get-ManagedIdentityToken -ResourceUrl "https://graph.microsoft.com/"
+            $Global:GraphToken = $Result.Token
+            $Global:GraphTokenExpiry = $Result.ExpiresOn
+            Write-Log "Graph Token acquired. Expires: $($Global:GraphTokenExpiry.ToString("yyyy-MM-dd HH:mm:ssZ"))"
+        } catch {
+            Write-Log "Failed to acquire Graph token: $($_.Exception.Message)" "ERROR"
+            throw
         }
+    }
+    return $Global:GraphToken
+}
 
-        Write-Log "Successfully acquired Microsoft Graph access token via Managed Identity."
-        return $Token
+function Get-AzureMonitorToken {
+    if ($null -eq $Global:MonitorToken -or (Get-Date).ToUniversalTime() -ge $Global:MonitorTokenExpiry.AddMinutes(-5)) {
+        Write-Log "Acquiring/Refreshing Azure Monitor access token..."
+        try {
+            $Result = Get-ManagedIdentityToken -ResourceUrl "https://monitor.azure.com/"
+            $Global:MonitorToken = $Result.Token
+            $Global:MonitorTokenExpiry = $Result.ExpiresOn
+            Write-Log "Monitor Token acquired. Expires: $($Global:MonitorTokenExpiry.ToString("yyyy-MM-dd HH:mm:ssZ"))"
+        } catch {
+            Write-Log "Failed to acquire Azure Monitor token: $($_.Exception.Message)" "ERROR"
+            throw
+        }
+    }
+    return $Global:MonitorToken
+}
+
+# ==============================================================================
+# Security & Pre-Flight Validation
+# ==============================================================================
+
+function Validate-GraphPermissions {
+    Write-Log "Validating necessary Microsoft Graph API Application permissions (Fail-Fast)..."
+    try {
+        $Uri = "https://graph.microsoft.com/v1.0/servicePrincipals?`$top=1"
+        $null = Invoke-GraphRequestWithRetryWrapper -Uri $Uri
+        Write-Log "Permission validation successful."
     } catch {
-        Write-Log "Failed to acquire Managed Identity token: $($_.Exception.Message)" "ERROR"
-        throw
+        Write-Log "CRITICAL: Service Principal does not have sufficient Microsoft Graph permissions." "ERROR"
+        throw $_
     }
 }
 
@@ -156,36 +220,64 @@ function Connect-EntraUsingManagedIdentity {
 # Extraction Functions
 # ==============================================================================
 
+$Global:ApiCallCount = 0
+
+function Get-DeterministicHash {
+    param([string]$InputString)
+    $Bytes = [System.Text.Encoding]::UTF8.GetBytes($InputString)
+    $Sha256 = [System.Security.Cryptography.SHA256]::Create()
+    $HashBytes = $Sha256.ComputeHash($Bytes)
+    $HashString = [BitConverter]::ToString($HashBytes) -replace '-'
+    return $HashString.ToLower()
+}
+
+function Invoke-GraphRequestWithRetryWrapper {
+    param(
+        [Parameter(Mandatory=$true)][string]$Uri,
+        [Parameter(Mandatory=$false)][string]$Method = "GET"
+    )
+    $Global:ApiCallCount++
+    $Token = Get-GraphToken
+    return Invoke-GraphRequestWithRetry -Uri $Uri -Token $Token -Method $Method
+}
+
 function Get-AppGovernanceMetrics {
-    param([string]$Token)
     Write-Log "Extracting App Governance Metrics (Expiring Credentials)..."
 
-    $Uri = "https://graph.microsoft.com/beta/servicePrincipals?`$select=id,displayName,appId,passwordCredentials,keyCredentials"
+    $Uri = "https://graph.microsoft.com/v1.0/servicePrincipals?`$select=id,displayName,appId,passwordCredentials,keyCredentials"
     $Metrics = @()
     $WarnThresholdDays = 30
 
     try {
-        $ServicePrincipals = Invoke-GraphRequestWithRetry -Uri $Uri -Token $Token
+        $ServicePrincipals = Invoke-GraphRequestWithRetryWrapper -Uri $Uri
 
         foreach ($Sp in $ServicePrincipals) {
             $Creds = @($Sp.passwordCredentials) + @($Sp.keyCredentials)
             foreach ($Cred in $Creds) {
                 if ($null -ne $Cred.endDateTime) {
                     $DaysRemaining = ([DateTime]$Cred.endDateTime - (Get-Date)).Days
+
+                    # Safer Credential Type detection since secretText is omitted by Graph API
+                    $CredType = if ($null -ne $Cred.customKeyIdentifier) { "Certificate" } else { "Password" }
+
                     if ($DaysRemaining -ge 0 -and $DaysRemaining -le $WarnThresholdDays) {
+                        $RecordId = Get-DeterministicHash -InputString "$($Sp.appId)-$CredType-$($Cred.endDateTime)"
                         $Metrics += [PSCustomObject]@{
+                            RecordId = $RecordId
                             AppId = $Sp.appId
                             DisplayName = $Sp.displayName
-                            CredentialType = if ($null -ne $Cred.secretText) { "Password" } else { "Certificate" }
+                            CredentialType = $CredType
                             ExpirationDate = $Cred.endDateTime
                             DaysRemaining = $DaysRemaining
                             Status = "ExpiringSoon"
                         }
                     } elseif ($DaysRemaining -lt 0) {
+                        $RecordId = Get-DeterministicHash -InputString "$($Sp.appId)-$CredType-$($Cred.endDateTime)"
                          $Metrics += [PSCustomObject]@{
+                            RecordId = $RecordId
                             AppId = $Sp.appId
                             DisplayName = $Sp.displayName
-                            CredentialType = if ($null -ne $Cred.secretText) { "Password" } else { "Certificate" }
+                            CredentialType = $CredType
                             ExpirationDate = $Cred.endDateTime
                             DaysRemaining = $DaysRemaining
                             Status = "Expired"
@@ -194,6 +286,7 @@ function Get-AppGovernanceMetrics {
                 }
             }
         }
+        Write-Log "Found $($Metrics.Count) expiring/expired credentials."
         return $Metrics
     } catch {
         Write-Log "Error extracting App Governance metrics." "ERROR"
@@ -202,56 +295,287 @@ function Get-AppGovernanceMetrics {
 }
 
 function Get-PIMRoleDriftMetrics {
-    param([string]$Token)
     Write-Log "Extracting PIM Role Drift Metrics (Global Admins)..."
 
-    # Using beta endpoint for unified role management
-    # Specifically targeting Global Administrator role (Template ID: 62e90394-69f5-4237-9190-012177145e10)
+    # Targeting Global Administrator role
     $GlobalAdminRoleId = "62e90394-69f5-4237-9190-012177145e10"
-    $Uri = "https://graph.microsoft.com/beta/roleManagement/directory/roleAssignments?`$filter=roleDefinitionId eq '$GlobalAdminRoleId'&`$expand=principal"
+    $BaseUri = "https://graph.microsoft.com/v1.0/roleManagement/directory"
 
     $Metrics = @()
 
     try {
-        $Assignments = Invoke-GraphRequestWithRetry -Uri $Uri -Token $Token
+        # Fetch Active Assignments
+        $ActiveUri = "$BaseUri/roleAssignmentSchedules?`$filter=roleDefinitionId eq '$GlobalAdminRoleId'&`$expand=principal"
+        $ActiveAssignments = Invoke-GraphRequestWithRetryWrapper -Uri $ActiveUri
 
-        foreach ($Assignment in $Assignments) {
+        foreach ($Assignment in $ActiveAssignments) {
+            $RecordId = Get-DeterministicHash -InputString "Active-$($Assignment.id)"
             $Metrics += [PSCustomObject]@{
-                PrincipalName = $Assignment.principal.displayName
+                RecordId = $RecordId
+                PrincipalName = if ($null -ne $Assignment.principal.displayName) { $Assignment.principal.displayName } else { "Unknown" }
                 PrincipalId = $Assignment.principalId
                 RoleName = "Global Administrator"
-                AssignmentType = if ($Assignment.assignmentType -eq "Active") { "Active" } else { "Eligible" }
-                IsPermanent = if ($null -eq $Assignment.endDateTime) { $true } else { $false }
+                AssignmentType = "Active"
+                IsPermanent = if ($null -eq $Assignment.scheduleInfo.expiration.endDateTime) { $true } else { $false }
+                ScheduleId = $Assignment.id
             }
         }
+
+        # Fetch Eligible Assignments
+        $EligibleUri = "$BaseUri/roleEligibilitySchedules?`$filter=roleDefinitionId eq '$GlobalAdminRoleId'&`$expand=principal"
+        $EligibleAssignments = Invoke-GraphRequestWithRetryWrapper -Uri $EligibleUri
+
+        foreach ($Assignment in $EligibleAssignments) {
+            $RecordId = Get-DeterministicHash -InputString "Eligible-$($Assignment.id)"
+            $Metrics += [PSCustomObject]@{
+                RecordId = $RecordId
+                PrincipalName = if ($null -ne $Assignment.principal.displayName) { $Assignment.principal.displayName } else { "Unknown" }
+                PrincipalId = $Assignment.principalId
+                RoleName = "Global Administrator"
+                AssignmentType = "Eligible"
+                IsPermanent = if ($null -eq $Assignment.scheduleInfo.expiration.endDateTime) { $true } else { $false }
+                ScheduleId = $Assignment.id
+            }
+        }
+
+        Write-Log "Found $($Metrics.Count) PIM schedules for Global Admin."
         return $Metrics
     } catch {
-         Write-Log "Error extracting PIM Role Drift metrics." "ERROR"
+         Write-Log "Error extracting PIM Role Drift metrics: $($_.Exception.Message)" "ERROR"
          return $null
     }
 }
 
 function Get-IdentityProtectionMetrics {
-    param([string]$Token)
     Write-Log "Extracting Identity Protection Metrics (High Risk Users)..."
 
-    $Uri = "https://graph.microsoft.com/beta/riskyUsers?`$filter=riskLevel eq 'high'"
+    $Uri = "https://graph.microsoft.com/v1.0/identityProtection/riskyUsers?`$filter=riskLevel eq 'high'"
     $Metrics = @()
 
     try {
-        $RiskyUsers = Invoke-GraphRequestWithRetry -Uri $Uri -Token $Token
+        $RiskyUsers = Invoke-GraphRequestWithRetryWrapper -Uri $Uri
 
         foreach ($User in $RiskyUsers) {
+            $RecordId = Get-DeterministicHash -InputString "$($User.userPrincipalName)-$($User.riskLastUpdatedDateTime)"
             $Metrics += [PSCustomObject]@{
+                RecordId = $RecordId
                 UserPrincipalName = $User.userPrincipalName
                 RiskLevel = $User.riskLevel
                 RiskDetail = $User.riskDetail
                 RiskLastUpdatedDateTime = $User.riskLastUpdatedDateTime
             }
         }
+        Write-Log "Found $($Metrics.Count) high risk users."
         return $Metrics
     } catch {
-        Write-Log "Error extracting Identity Protection metrics." "ERROR"
+        Write-Log "Error extracting Identity Protection User metrics: $($_.Exception.Message)" "ERROR"
+        return $null
+    }
+}
+
+function Get-RiskyServicePrincipalsMetrics {
+    Write-Log "Extracting Identity Protection Metrics (High Risk Service Principals)..."
+
+    $Uri = "https://graph.microsoft.com/v1.0/identityProtection/riskyServicePrincipals?`$filter=riskLevel eq 'high'"
+    $Metrics = @()
+
+    try {
+        $RiskySPs = Invoke-GraphRequestWithRetryWrapper -Uri $Uri
+
+        foreach ($Sp in $RiskySPs) {
+            $RecordId = Get-DeterministicHash -InputString "$($Sp.appId)-$($Sp.riskLastUpdatedDateTime)"
+            $Metrics += [PSCustomObject]@{
+                RecordId = $RecordId
+                AppId = $Sp.appId
+                DisplayName = $Sp.displayName
+                RiskLevel = $Sp.riskLevel
+                RiskDetail = $Sp.riskDetail
+                RiskLastUpdatedDateTime = $Sp.riskLastUpdatedDateTime
+            }
+        }
+        Write-Log "Found $($Metrics.Count) high risk service principals."
+        return $Metrics
+    } catch {
+        Write-Log "Error extracting Identity Protection SP metrics: $($_.Exception.Message)" "ERROR"
+        return $null
+    }
+}
+
+function Get-DormantAccountsMetrics {
+    Write-Log "Extracting Dormant Accounts Metrics (>90 days inactive)..."
+
+    $ThresholdDate = (Get-Date).AddDays(-90).ToString("yyyy-MM-ddTHH:mm:ssZ")
+    # Utilizing signInActivity (requires AuditLog.Read.All and Directory.Read.All)
+    $Uri = "https://graph.microsoft.com/v1.0/users?`$select=id,userPrincipalName,signInActivity,accountEnabled&`$filter=accountEnabled eq true"
+
+    $Metrics = @()
+
+    try {
+        $Users = Invoke-GraphRequestWithRetryWrapper -Uri $Uri
+
+        foreach ($User in $Users) {
+            $LastSignIn = $null
+            if ($null -ne $User.signInActivity -and $null -ne $User.signInActivity.lastSignInDateTime) {
+                $LastSignIn = $User.signInActivity.lastSignInDateTime
+            }
+
+            # If they have signed in, and it's older than threshold OR they have never signed in
+            if ($null -ne $LastSignIn) {
+                $DaysInactive = ([DateTime]$ThresholdDate - [DateTime]$LastSignIn).Days
+                if ($DaysInactive -gt 0) {
+                     $RecordId = Get-DeterministicHash -InputString "$($User.userPrincipalName)-$LastSignIn"
+                     $Metrics += [PSCustomObject]@{
+                        RecordId = $RecordId
+                        UserPrincipalName = $User.userPrincipalName
+                        LastSignInDateTime = $LastSignIn
+                        DaysInactive = $DaysInactive + 90 # approximate for reporting
+                     }
+                }
+            } else {
+                # Never signed in, but account is enabled. We will flag them.
+                $RecordId = Get-DeterministicHash -InputString "$($User.userPrincipalName)-NeverSignedIn"
+                $Metrics += [PSCustomObject]@{
+                    RecordId = $RecordId
+                    UserPrincipalName = $User.userPrincipalName
+                    LastSignInDateTime = $null
+                    DaysInactive = 999
+                }
+            }
+        }
+        Write-Log "Found $($Metrics.Count) active but dormant accounts."
+        return $Metrics
+    } catch {
+        Write-Log "Error extracting Dormant Account metrics: $($_.Exception.Message)" "ERROR"
+        return $null
+    }
+}
+
+function Get-GuestUserRiskMetrics {
+    Write-Log "Extracting Guest/External User Metrics..."
+
+    $Uri = "https://graph.microsoft.com/v1.0/users?`$filter=userType eq 'Guest'&`$select=id,userPrincipalName,createdDateTime,accountEnabled"
+    $Metrics = @()
+
+    try {
+        $Guests = Invoke-GraphRequestWithRetryWrapper -Uri $Uri
+
+        foreach ($Guest in $Guests) {
+            $RecordId = Get-DeterministicHash -InputString "$($Guest.userPrincipalName)-$($Guest.accountEnabled)"
+            $Metrics += [PSCustomObject]@{
+                RecordId = $RecordId
+                UserPrincipalName = $Guest.userPrincipalName
+                AccountEnabled = $Guest.accountEnabled
+                CreatedDateTime = $Guest.createdDateTime
+            }
+        }
+        Write-Log "Found $($Metrics.Count) guest users."
+        return $Metrics
+    } catch {
+        Write-Log "Error extracting Guest User metrics: $($_.Exception.Message)" "ERROR"
+        return $null
+    }
+}
+
+function Get-AppConsentAnomaliesMetrics {
+    Write-Log "Extracting App Consent Anomalies (High Privilege Grants)..."
+
+    $Uri = "https://graph.microsoft.com/v1.0/oauth2PermissionGrants"
+    $Metrics = @()
+    # List of highly sensitive scopes that usually indicate high risk if granted widely
+    $HighRiskScopes = @("Directory.ReadWrite.All", "RoleManagement.ReadWrite.Directory", "AppRoleAssignment.ReadWrite.All")
+
+    try {
+        $Grants = Invoke-GraphRequestWithRetryWrapper -Uri $Uri
+
+        foreach ($Grant in $Grants) {
+            $Scopes = $Grant.scope -split " "
+            $RiskFound = $false
+            $FoundScopes = @()
+            foreach ($Scope in $Scopes) {
+                if ($HighRiskScopes -contains $Scope) {
+                    $RiskFound = $true
+                    $FoundScopes += $Scope
+                }
+            }
+
+            if ($RiskFound) {
+                $RecordId = Get-DeterministicHash -InputString "$($Grant.id)-$($Grant.scope)"
+                $Metrics += [PSCustomObject]@{
+                    RecordId = $RecordId
+                    GrantId = $Grant.id
+                    ClientId = $Grant.clientId
+                    PrincipalId = if ($null -ne $Grant.principalId) { $Grant.principalId } else { "AllPrincipals" }
+                    ConsentType = $Grant.consentType
+                    HighRiskScopes = $FoundScopes -join ", "
+                }
+            }
+        }
+        Write-Log "Found $($Metrics.Count) anomalous app consent grants."
+        return $Metrics
+    } catch {
+        Write-Log "Error extracting App Consent metrics: $($_.Exception.Message)" "ERROR"
+        return $null
+    }
+}
+
+function Get-TokenLifetimePoliciesMetrics {
+    Write-Log "Extracting Token Lifetime Policies..."
+
+    $Uri = "https://graph.microsoft.com/v1.0/policies/tokenLifetimePolicies"
+    $Metrics = @()
+
+    try {
+        $Policies = Invoke-GraphRequestWithRetryWrapper -Uri $Uri
+
+        foreach ($Policy in $Policies) {
+            $RecordId = Get-DeterministicHash -InputString "$($Policy.id)"
+            $Metrics += [PSCustomObject]@{
+                RecordId = $RecordId
+                PolicyId = $Policy.id
+                DisplayName = $Policy.displayName
+                IsOrganizationDefault = $Policy.isOrganizationDefault
+                Definition = $Policy.definition -join " | "
+            }
+        }
+        Write-Log "Found $($Metrics.Count) token lifetime policies."
+        return $Metrics
+    } catch {
+        Write-Log "Error extracting Token Lifetime Policy metrics: $($_.Exception.Message)" "ERROR"
+        return $null
+    }
+}
+
+function Get-ConditionalAccessMetrics {
+    Write-Log "Extracting Conditional Access Policy Status..."
+
+    $Uri = "https://graph.microsoft.com/v1.0/identity/conditionalAccess/policies?`$select=id,displayName,state,conditions"
+    $Metrics = @()
+
+    try {
+        $Policies = Invoke-GraphRequestWithRetryWrapper -Uri $Uri
+
+        foreach ($Policy in $Policies) {
+            $HasExceptions = $false
+            if ($null -ne $Policy.conditions.users.excludeUsers -and $Policy.conditions.users.excludeUsers.Count -gt 0) {
+                $HasExceptions = $true
+            }
+            if ($null -ne $Policy.conditions.users.excludeGroups -and $Policy.conditions.users.excludeGroups.Count -gt 0) {
+                $HasExceptions = $true
+            }
+
+            $RecordId = Get-DeterministicHash -InputString "$($Policy.id)-$($Policy.state)-$HasExceptions"
+            $Metrics += [PSCustomObject]@{
+                RecordId = $RecordId
+                PolicyName = $Policy.displayName
+                State = $Policy.state
+                HasExceptions = $HasExceptions
+                CreatedDateTime = $Policy.createdDateTime
+            }
+        }
+        Write-Log "Analyzed $($Metrics.Count) Conditional Access policies."
+        return $Metrics
+    } catch {
+        Write-Log "Error extracting Conditional Access metrics: $($_.Exception.Message)" "ERROR"
         return $null
     }
 }
@@ -260,30 +584,7 @@ function Get-IdentityProtectionMetrics {
 # Log Analytics Integration (Modern Logs Ingestion API)
 # ==============================================================================
 
-function Get-AzureMonitorToken {
-    Write-Log "Attempting to authenticate to Azure Monitor using System-Assigned Managed Identity..."
-    try {
-        # Endpoint for Azure Automation Managed Identity, targeting Azure Monitor
-        $Resource = "https://monitor.azure.com/"
-        $Endpoint = $env:IDENTITY_ENDPOINT
-        $Header = $env:IDENTITY_HEADER
-
-        if ([string]::IsNullOrEmpty($Endpoint) -or [string]::IsNullOrEmpty($Header)) {
-            Write-Log "Managed Identity endpoint variables not found. Attempting generic IMDS endpoint..." "WARN"
-            $Response = Invoke-RestMethod -Uri "http://169.254.169.254/metadata/identity/oauth2/token?api-version=2018-02-01&resource=$Resource" -Headers @{Metadata="true"} -Method Get
-            $Token = $Response.access_token
-        } else {
-            $Response = Invoke-RestMethod -Method Get -Uri "$Endpoint`?resource=$Resource&api-version=2019-08-01" -Headers @{ "X-IDENTITY-HEADER" = $Header }
-            $Token = $Response.access_token
-        }
-
-        Write-Log "Successfully acquired Azure Monitor access token."
-        return $Token
-    } catch {
-        Write-Log "Failed to acquire Azure Monitor token: $($_.Exception.Message)" "ERROR"
-        throw
-    }
-}
+# Function removed to use the cached version defined earlier
 
 function Send-DataToLogAnalytics {
     param(
@@ -308,7 +609,8 @@ function Send-DataToLogAnalytics {
         }
     }
 
-    $LogData = $JsonData | ConvertTo-Json -Depth 10
+    # Use -InputObject to prevent PowerShell from unrolling single-item arrays
+    $LogData = ConvertTo-Json -InputObject $JsonData -Depth 10 -Compress
 
     $Uri = "$DceUri/dataCollectionRules/$DcrImmutableId/streams/Custom-${StreamName}?api-version=2023-01-01"
 
@@ -360,21 +662,39 @@ try {
         throw "Data Collection Endpoint URI or DCR Immutable ID is missing. Extraction aborted."
     }
 
-    # 1. Authenticate (Dual Tokens required)
-    $GraphToken = Connect-EntraUsingManagedIdentity
-    $MonitorToken = Get-AzureMonitorToken
+    # 1. Pre-fetch initial tokens (Smart wrappers handle caching/refresh)
+    $null = Get-GraphToken
+    $null = Get-AzureMonitorToken
 
-    # 2. Extract Data
-    $AppGovData = Get-AppGovernanceMetrics -Token $GraphToken
-    $PimData = Get-PIMRoleDriftMetrics -Token $GraphToken
-    $IdpData = Get-IdentityProtectionMetrics -Token $GraphToken
+    # 2. Validate Permissions (Fail Fast)
+    Validate-GraphPermissions
 
-    # 3. Push to Azure Monitor via DCR
-    Send-DataToLogAnalytics -DceUri $DceUri -DcrImmutableId $DcrImmutableId -StreamName "IAM_AppGovernance_CL" -MonitorToken $MonitorToken -JsonData $AppGovData
-    Send-DataToLogAnalytics -DceUri $DceUri -DcrImmutableId $DcrImmutableId -StreamName "IAM_PIMRoleDrift_CL" -MonitorToken $MonitorToken -JsonData $PimData
-    Send-DataToLogAnalytics -DceUri $DceUri -DcrImmutableId $DcrImmutableId -StreamName "IAM_IdentityProtection_CL" -MonitorToken $MonitorToken -JsonData $IdpData
+    # 3. Extract Data
+    $StartTime = Get-Date
+    $AppGovData = Get-AppGovernanceMetrics
+    $PimData = Get-PIMRoleDriftMetrics
+    $IdpData = Get-IdentityProtectionMetrics
+    $IdpSpData = Get-RiskyServicePrincipalsMetrics
+    $CaData = Get-ConditionalAccessMetrics
+    $DormantData = Get-DormantAccountsMetrics
+    $GuestData = Get-GuestUserRiskMetrics
+    $ConsentData = Get-AppConsentAnomaliesMetrics
+    $TokenPoliciesData = Get-TokenLifetimePoliciesMetrics
 
-    Write-Log "Extraction and DCR Upload Complete."
+    # 4. Push to Azure Monitor via DCR
+    # We dynamically fetch Monitor token inside Send-DataToLogAnalytics logic or here to ensure it isn't expired on long runs
+    Send-DataToLogAnalytics -DceUri $DceUri -DcrImmutableId $DcrImmutableId -StreamName "IAM_AppGovernance_CL" -MonitorToken (Get-AzureMonitorToken) -JsonData $AppGovData
+    Send-DataToLogAnalytics -DceUri $DceUri -DcrImmutableId $DcrImmutableId -StreamName "IAM_PIMRoleDrift_CL" -MonitorToken (Get-AzureMonitorToken) -JsonData $PimData
+    Send-DataToLogAnalytics -DceUri $DceUri -DcrImmutableId $DcrImmutableId -StreamName "IAM_IdentityProtection_CL" -MonitorToken (Get-AzureMonitorToken) -JsonData $IdpData
+    Send-DataToLogAnalytics -DceUri $DceUri -DcrImmutableId $DcrImmutableId -StreamName "IAM_RiskyServicePrincipals_CL" -MonitorToken (Get-AzureMonitorToken) -JsonData $IdpSpData
+    Send-DataToLogAnalytics -DceUri $DceUri -DcrImmutableId $DcrImmutableId -StreamName "IAM_ConditionalAccess_CL" -MonitorToken (Get-AzureMonitorToken) -JsonData $CaData
+    Send-DataToLogAnalytics -DceUri $DceUri -DcrImmutableId $DcrImmutableId -StreamName "IAM_DormantAccounts_CL" -MonitorToken (Get-AzureMonitorToken) -JsonData $DormantData
+    Send-DataToLogAnalytics -DceUri $DceUri -DcrImmutableId $DcrImmutableId -StreamName "IAM_GuestUserRisk_CL" -MonitorToken (Get-AzureMonitorToken) -JsonData $GuestData
+    Send-DataToLogAnalytics -DceUri $DceUri -DcrImmutableId $DcrImmutableId -StreamName "IAM_AppConsentAnomalies_CL" -MonitorToken (Get-AzureMonitorToken) -JsonData $ConsentData
+    Send-DataToLogAnalytics -DceUri $DceUri -DcrImmutableId $DcrImmutableId -StreamName "IAM_TokenLifetimePolicies_CL" -MonitorToken (Get-AzureMonitorToken) -JsonData $TokenPoliciesData
+
+    $Duration = ((Get-Date) - $StartTime).TotalSeconds
+    Write-Log "Extraction and DCR Upload Complete. Total Duration: $([math]::Round($Duration, 2))s. Total Graph API Calls: $Global:ApiCallCount."
 } catch {
     Write-Log "Execution Failed: $($_.Exception.Message)" "ERROR"
     exit 1
