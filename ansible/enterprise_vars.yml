@@ -1,0 +1,31 @@
+---
+# Enterprise Variables Configuration
+# Centralized variables controlling which EDRs/MDMs are deployed.
+
+# ==========================================
+# Security Settings
+# ==========================================
+# Supported Values: 'crowdstrike', 'sentinelone', 'defender'
+edr_solution: 'crowdstrike'
+
+# CrowdStrike Variables
+crowdstrike_windows_url: "https://artifactory.enterprise.com/agents/WindowsSensor.exe"
+crowdstrike_macos_url: "https://artifactory.enterprise.com/agents/FalconSensor.pkg"
+crowdstrike_cid: "{{ lookup('env', 'CS_FALCON_CID') | default('00000000000000000000000000000000-00') }}"
+
+# SentinelOne Variables
+sentinelone_windows_url: "https://artifactory.enterprise.com/agents/SentinelOneInstaller.exe"
+sentinelone_macos_url: "https://artifactory.enterprise.com/agents/SentinelOneInstaller.pkg"
+sentinelone_site_token: "{{ lookup('env', 'S1_SITE_TOKEN') | default('mock_token') }}"
+
+# ==========================================
+# Mobile Device Management (MDM) Settings
+# ==========================================
+# Supported Values: 'intune', 'jamf'
+mdm_solution: 'intune'
+
+# Target specific device IDs or leave blank to sync all available
+mdm_target_device_ids: []
+
+# Jamf Pro Instance URL (e.g., yourcompany.jamfcloud.com)
+jamf_instance_url: "enterprise.jamfcloud.com"

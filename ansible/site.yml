@@ -1,0 +1,32 @@
+---
+# Enterprise Endpoint Management Orchestration Playbook
+# This playbook orchestrates the deployment and patching across
+# diverse cloud environments, operating systems, and MDM platforms.
+
+- name: Endpoint Management - OS Patching
+  hosts: all:!mobile
+  gather_facts: yes
+  vars_files:
+    - enterprise_vars.yml
+  roles:
+    - role: os_patching
+      tags: ['patching', 'os']
+
+- name: Endpoint Management - Deploy EDR Solutions
+  hosts: all:!mobile
+  gather_facts: yes
+  vars_files:
+    - enterprise_vars.yml
+  roles:
+    - role: deploy_edr
+      tags: ['security', 'edr']
+
+- name: Endpoint Management - Sync Mobile Devices (MDM API)
+  hosts: localhost
+  connection: local
+  gather_facts: no
+  vars_files:
+    - enterprise_vars.yml
+  roles:
+    - role: manage_mobile
+      tags: ['mobile', 'mdm']

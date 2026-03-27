@@ -1,0 +1,30 @@
+---
+# Enterprise GCP Compute Dynamic Inventory Configuration
+plugin: gcp_compute
+
+# Define projects where your endpoints reside
+projects:
+  - your-gcp-project-id
+
+# Use specific zones
+zones:
+  - us-central1-a
+  - us-central1-b
+
+# Define filters based on labels applied via Terraform
+filters:
+  - labels.environment = production
+  - labels.role = endpoint
+
+# Define groups based on labels for targeted patching and deployment
+keyed_groups:
+  - key: labels.os
+    prefix: os
+  - key: labels.environment
+    prefix: env
+  - key: labels.team
+    prefix: team
+
+# Set connection properties
+compose:
+  ansible_host: networkInterfaces[0].accessConfigs[0].natIP # Or internal IP depending on network architecture
