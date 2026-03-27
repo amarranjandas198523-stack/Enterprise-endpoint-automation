@@ -10,6 +10,18 @@ variable "location" {
   default     = "eastus"
 }
 
+variable "location_prefix" {
+  description = "Short name for the region used in naming conventions (e.g. eus, wus2)."
+  type        = string
+  default     = "eus"
+}
+
+variable "environment" {
+  description = "The environment tier (e.g., prod, dev, staging)."
+  type        = string
+  default     = "prod"
+}
+
 variable "log_analytics_workspace_name" {
   description = "The name of the Log Analytics Workspace for IAM reporting."
   type        = string

@@ -5,19 +5,23 @@
 .DESCRIPTION
     This script is designed to run within an Azure Automation Account utilizing a
     System-Assigned Managed Identity. It connects to Microsoft Graph API to extract
-    high-value, advanced IAM metrics, formats the data, and pushes it to an Azure Log
-    Analytics Workspace via the HTTP Data Collector API for Power BI reporting.
+    high-value, advanced IAM metrics, evaluates risk scores, and pushes them to Azure Monitor
+    via the modern Logs Ingestion API (DCR) for Power BI reporting.
 
     High-value metrics extracted:
-    - Highly Privileged App Governance (Service Principals with expiring credentials)
+    - Highly Privileged App Governance (Expiring credentials)
     - PIM Role Drift (Active vs Eligible)
     - Identity Protection Risks (High Risk Users & Service Principals)
-    - Conditional Access Exceptions (Bypass auditing)
+    - Conditional Access Exceptions
+    - Dormant Accounts (>90 days inactive)
+    - Guest User Risks
+    - App Consent Anomalies (High-Privilege OAuth Scopes)
+    - Token Lifetime Policies
 
 .PREREQUISITES
     - Azure Automation Account with a System-Assigned Managed Identity.
     - Managed Identity must have Graph API permissions (Directory.Read.All, AuditLog.Read.All, Policy.Read.All, RoleManagement.Read.Directory, Application.Read.All).
-    - Azure Automation Variables: 'LogAnalyticsWorkspaceId' and 'LogAnalyticsPrimaryKey'.
+    - Azure Automation Variables: 'DataCollectionEndpointUri' and 'DataCollectionRuleImmutableId'.
 
 .AUTHOR
     Enterprise IAM Security Team
@@ -262,8 +266,10 @@ function Get-AppGovernanceMetrics {
 
                     if ($DaysRemaining -ge 0 -and $DaysRemaining -le $WarnThresholdDays) {
                         $RecordId = Get-DeterministicHash -InputString "$($Sp.appId)-$CredType-$($Cred.endDateTime)"
+                        $RiskScore = if ($DaysRemaining -le 7) { 70 } elseif ($DaysRemaining -le 14) { 50 } else { 30 }
                         $Metrics += [PSCustomObject]@{
                             RecordId = $RecordId
+                            RiskScore = $RiskScore
                             AppId = $Sp.appId
                             DisplayName = $Sp.displayName
                             CredentialType = $CredType
@@ -275,6 +281,7 @@ function Get-AppGovernanceMetrics {
                         $RecordId = Get-DeterministicHash -InputString "$($Sp.appId)-$CredType-$($Cred.endDateTime)"
                          $Metrics += [PSCustomObject]@{
                             RecordId = $RecordId
+                            RiskScore = 90
                             AppId = $Sp.appId
                             DisplayName = $Sp.displayName
                             CredentialType = $CredType
@@ -310,13 +317,16 @@ function Get-PIMRoleDriftMetrics {
 
         foreach ($Assignment in $ActiveAssignments) {
             $RecordId = Get-DeterministicHash -InputString "Active-$($Assignment.id)"
+            $IsPerm = if ($null -eq $Assignment.scheduleInfo.expiration.endDateTime) { $true } else { $false }
+            $RiskScore = if ($IsPerm) { 100 } else { 60 } # Active Permanent GA is highest risk
             $Metrics += [PSCustomObject]@{
                 RecordId = $RecordId
+                RiskScore = $RiskScore
                 PrincipalName = if ($null -ne $Assignment.principal.displayName) { $Assignment.principal.displayName } else { "Unknown" }
                 PrincipalId = $Assignment.principalId
                 RoleName = "Global Administrator"
                 AssignmentType = "Active"
-                IsPermanent = if ($null -eq $Assignment.scheduleInfo.expiration.endDateTime) { $true } else { $false }
+                IsPermanent = $IsPerm
                 ScheduleId = $Assignment.id
             }
         }
@@ -327,13 +337,16 @@ function Get-PIMRoleDriftMetrics {
 
         foreach ($Assignment in $EligibleAssignments) {
             $RecordId = Get-DeterministicHash -InputString "Eligible-$($Assignment.id)"
+            $IsPerm = if ($null -eq $Assignment.scheduleInfo.expiration.endDateTime) { $true } else { $false }
+            $RiskScore = if ($IsPerm) { 80 } else { 40 } # Eligible Permanent is very risky
             $Metrics += [PSCustomObject]@{
                 RecordId = $RecordId
+                RiskScore = $RiskScore
                 PrincipalName = if ($null -ne $Assignment.principal.displayName) { $Assignment.principal.displayName } else { "Unknown" }
                 PrincipalId = $Assignment.principalId
                 RoleName = "Global Administrator"
                 AssignmentType = "Eligible"
-                IsPermanent = if ($null -eq $Assignment.scheduleInfo.expiration.endDateTime) { $true } else { $false }
+                IsPermanent = $IsPerm
                 ScheduleId = $Assignment.id
             }
         }
@@ -359,6 +372,7 @@ function Get-IdentityProtectionMetrics {
             $RecordId = Get-DeterministicHash -InputString "$($User.userPrincipalName)-$($User.riskLastUpdatedDateTime)"
             $Metrics += [PSCustomObject]@{
                 RecordId = $RecordId
+                RiskScore = 95
                 UserPrincipalName = $User.userPrincipalName
                 RiskLevel = $User.riskLevel
                 RiskDetail = $User.riskDetail
@@ -386,6 +400,7 @@ function Get-RiskyServicePrincipalsMetrics {
             $RecordId = Get-DeterministicHash -InputString "$($Sp.appId)-$($Sp.riskLastUpdatedDateTime)"
             $Metrics += [PSCustomObject]@{
                 RecordId = $RecordId
+                RiskScore = 95
                 AppId = $Sp.appId
                 DisplayName = $Sp.displayName
                 RiskLevel = $Sp.riskLevel
@@ -424,11 +439,14 @@ function Get-DormantAccountsMetrics {
                 $DaysInactive = ([DateTime]$ThresholdDate - [DateTime]$LastSignIn).Days
                 if ($DaysInactive -gt 0) {
                      $RecordId = Get-DeterministicHash -InputString "$($User.userPrincipalName)-$LastSignIn"
+                     $TotalInactive = $DaysInactive + 90
+                     $RiskScore = if ($TotalInactive -ge 365) { 90 } elseif ($TotalInactive -ge 180) { 75 } else { 50 }
                      $Metrics += [PSCustomObject]@{
                         RecordId = $RecordId
+                        RiskScore = $RiskScore
                         UserPrincipalName = $User.userPrincipalName
                         LastSignInDateTime = $LastSignIn
-                        DaysInactive = $DaysInactive + 90 # approximate for reporting
+                        DaysInactive = $TotalInactive
                      }
                 }
             } else {
@@ -436,6 +454,7 @@ function Get-DormantAccountsMetrics {
                 $RecordId = Get-DeterministicHash -InputString "$($User.userPrincipalName)-NeverSignedIn"
                 $Metrics += [PSCustomObject]@{
                     RecordId = $RecordId
+                    RiskScore = 60
                     UserPrincipalName = $User.userPrincipalName
                     LastSignInDateTime = $null
                     DaysInactive = 999
@@ -461,8 +480,10 @@ function Get-GuestUserRiskMetrics {
 
         foreach ($Guest in $Guests) {
             $RecordId = Get-DeterministicHash -InputString "$($Guest.userPrincipalName)-$($Guest.accountEnabled)"
+            $RiskScore = if ($Guest.accountEnabled) { 40 } else { 10 }
             $Metrics += [PSCustomObject]@{
                 RecordId = $RecordId
+                RiskScore = $RiskScore
                 UserPrincipalName = $Guest.userPrincipalName
                 AccountEnabled = $Guest.accountEnabled
                 CreatedDateTime = $Guest.createdDateTime
@@ -500,8 +521,10 @@ function Get-AppConsentAnomaliesMetrics {
 
             if ($RiskFound) {
                 $RecordId = Get-DeterministicHash -InputString "$($Grant.id)-$($Grant.scope)"
+                $RiskScore = if ($Grant.consentType -eq "AllPrincipals") { 100 } else { 85 }
                 $Metrics += [PSCustomObject]@{
                     RecordId = $RecordId
+                    RiskScore = $RiskScore
                     GrantId = $Grant.id
                     ClientId = $Grant.clientId
                     PrincipalId = if ($null -ne $Grant.principalId) { $Grant.principalId } else { "AllPrincipals" }
@@ -564,8 +587,14 @@ function Get-ConditionalAccessMetrics {
             }
 
             $RecordId = Get-DeterministicHash -InputString "$($Policy.id)-$($Policy.state)-$HasExceptions"
+            $RiskScore = 0
+            if ($Policy.state -eq "disabled") { $RiskScore = 80 }
+            elseif ($HasExceptions) { $RiskScore = 50 }
+            else { $RiskScore = 10 }
+
             $Metrics += [PSCustomObject]@{
                 RecordId = $RecordId
+                RiskScore = $RiskScore
                 PolicyName = $Policy.displayName
                 State = $Policy.state
                 HasExceptions = $HasExceptions

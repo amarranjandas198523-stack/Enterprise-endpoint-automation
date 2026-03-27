@@ -37,8 +37,36 @@ resource "azurerm_log_analytics_workspace" "iam_reporting_law" {
 # Modern Azure Monitor Logs Ingestion API (DCR & DCE)
 # ---------------------------------------------------------------------------------------------------------------------
 
+resource "azurerm_management_lock" "rg_lock" {
+  name       = "lock-${azurerm_resource_group.iam_reporting_rg.name}"
+  scope      = azurerm_resource_group.iam_reporting_rg.id
+  lock_level = "CanNotDelete"
+  notes      = "Enterprise IAM Reporting Resource Group is protected from accidental deletion."
+}
+
+# In an enterprise, you'd forward Entra ID native logs to Log Analytics
+# data "azurerm_client_config" "current" {}
+# resource "azurerm_monitor_diagnostic_setting" "entra_logs" {
+#   name                       = "diag-entra-to-law-${var.environment}"
+#   target_resource_id         = "/providers/microsoft.aadiam" # Entra ID tenant level
+#   log_analytics_workspace_id = azurerm_log_analytics_workspace.iam_reporting_law.id
+#
+#   enabled_log {
+#     category = "SignInLogs"
+#   }
+#   enabled_log {
+#     category = "AuditLogs"
+#   }
+#   enabled_log {
+#     category = "NonInteractiveUserSignInLogs"
+#   }
+#   enabled_log {
+#     category = "ServicePrincipalSignInLogs"
+#   }
+# }
+
 resource "azurerm_monitor_data_collection_endpoint" "iam_reporting_dce" {
-  name                = "dce-iam-reporting-prod"
+  name                = "dce-iam-reporting-${var.environment}-${var.location_prefix}"
   resource_group_name = azurerm_resource_group.iam_reporting_rg.name
   location            = azurerm_resource_group.iam_reporting_rg.location
   tags                = var.tags
@@ -99,7 +127,7 @@ resource "azurerm_log_analytics_workspace_table" "token_table" {
 }
 
 resource "azurerm_monitor_data_collection_rule" "iam_reporting_dcr" {
-  name                        = "dcr-iam-reporting-prod"
+  name                        = "dcr-iam-reporting-${var.environment}-${var.location_prefix}"
   resource_group_name         = azurerm_resource_group.iam_reporting_rg.name
   location                    = azurerm_resource_group.iam_reporting_rg.location
   data_collection_endpoint_id = azurerm_monitor_data_collection_endpoint.iam_reporting_dce.id
@@ -115,63 +143,63 @@ resource "azurerm_monitor_data_collection_rule" "iam_reporting_dcr" {
   data_flow {
     streams      = ["Custom-IAM_AppGovernance_CL"]
     destinations = ["law-destination"]
-    transform_kql = "source"
+    transform_kql = "source | extend IngestedAt = now()"
     output_stream = "Custom-IAM_AppGovernance_CL"
   }
 
   data_flow {
     streams      = ["Custom-IAM_PIMRoleDrift_CL"]
     destinations = ["law-destination"]
-    transform_kql = "source"
+    transform_kql = "source | extend IngestedAt = now()"
     output_stream = "Custom-IAM_PIMRoleDrift_CL"
   }
 
   data_flow {
     streams      = ["Custom-IAM_IdentityProtection_CL"]
     destinations = ["law-destination"]
-    transform_kql = "source"
+    transform_kql = "source | extend IngestedAt = now()"
     output_stream = "Custom-IAM_IdentityProtection_CL"
   }
 
   data_flow {
     streams      = ["Custom-IAM_RiskyServicePrincipals_CL"]
     destinations = ["law-destination"]
-    transform_kql = "source"
+    transform_kql = "source | extend IngestedAt = now()"
     output_stream = "Custom-IAM_RiskyServicePrincipals_CL"
   }
 
   data_flow {
     streams      = ["Custom-IAM_ConditionalAccess_CL"]
     destinations = ["law-destination"]
-    transform_kql = "source"
+    transform_kql = "source | extend IngestedAt = now()"
     output_stream = "Custom-IAM_ConditionalAccess_CL"
   }
 
   data_flow {
     streams      = ["Custom-IAM_DormantAccounts_CL"]
     destinations = ["law-destination"]
-    transform_kql = "source"
+    transform_kql = "source | extend IngestedAt = now()"
     output_stream = "Custom-IAM_DormantAccounts_CL"
   }
 
   data_flow {
     streams      = ["Custom-IAM_GuestUserRisk_CL"]
     destinations = ["law-destination"]
-    transform_kql = "source"
+    transform_kql = "source | extend IngestedAt = now()"
     output_stream = "Custom-IAM_GuestUserRisk_CL"
   }
 
   data_flow {
     streams      = ["Custom-IAM_AppConsentAnomalies_CL"]
     destinations = ["law-destination"]
-    transform_kql = "source"
+    transform_kql = "source | extend IngestedAt = now()"
     output_stream = "Custom-IAM_AppConsentAnomalies_CL"
   }
 
   data_flow {
     streams      = ["Custom-IAM_TokenLifetimePolicies_CL"]
     destinations = ["law-destination"]
-    transform_kql = "source"
+    transform_kql = "source | extend IngestedAt = now()"
     output_stream = "Custom-IAM_TokenLifetimePolicies_CL"
   }
 
@@ -180,6 +208,14 @@ resource "azurerm_monitor_data_collection_rule" "iam_reporting_dcr" {
     column {
       name = "TimeGenerated"
       type = "datetime"
+    }
+    column {
+      name = "IngestedAt"
+      type = "datetime"
+    }
+    column {
+      name = "RiskScore"
+      type = "real"
     }
     column {
       name = "RecordId"
@@ -218,6 +254,14 @@ resource "azurerm_monitor_data_collection_rule" "iam_reporting_dcr" {
       type = "datetime"
     }
     column {
+      name = "IngestedAt"
+      type = "datetime"
+    }
+    column {
+      name = "RiskScore"
+      type = "real"
+    }
+    column {
       name = "RecordId"
       type = "string"
     }
@@ -254,6 +298,14 @@ resource "azurerm_monitor_data_collection_rule" "iam_reporting_dcr" {
       type = "datetime"
     }
     column {
+      name = "IngestedAt"
+      type = "datetime"
+    }
+    column {
+      name = "RiskScore"
+      type = "real"
+    }
+    column {
       name = "RecordId"
       type = "string"
     }
@@ -280,6 +332,14 @@ resource "azurerm_monitor_data_collection_rule" "iam_reporting_dcr" {
     column {
       name = "TimeGenerated"
       type = "datetime"
+    }
+    column {
+      name = "IngestedAt"
+      type = "datetime"
+    }
+    column {
+      name = "RiskScore"
+      type = "real"
     }
     column {
       name = "RecordId"
@@ -314,6 +374,14 @@ resource "azurerm_monitor_data_collection_rule" "iam_reporting_dcr" {
       type = "datetime"
     }
     column {
+      name = "IngestedAt"
+      type = "datetime"
+    }
+    column {
+      name = "RiskScore"
+      type = "real"
+    }
+    column {
       name = "RecordId"
       type = "string"
     }
@@ -342,6 +410,14 @@ resource "azurerm_monitor_data_collection_rule" "iam_reporting_dcr" {
       type = "datetime"
     }
     column {
+      name = "IngestedAt"
+      type = "datetime"
+    }
+    column {
+      name = "RiskScore"
+      type = "real"
+    }
+    column {
       name = "RecordId"
       type = "string"
     }
@@ -366,6 +442,14 @@ resource "azurerm_monitor_data_collection_rule" "iam_reporting_dcr" {
       type = "datetime"
     }
     column {
+      name = "IngestedAt"
+      type = "datetime"
+    }
+    column {
+      name = "RiskScore"
+      type = "real"
+    }
+    column {
       name = "RecordId"
       type = "string"
     }
@@ -388,6 +472,14 @@ resource "azurerm_monitor_data_collection_rule" "iam_reporting_dcr" {
     column {
       name = "TimeGenerated"
       type = "datetime"
+    }
+    column {
+      name = "IngestedAt"
+      type = "datetime"
+    }
+    column {
+      name = "RiskScore"
+      type = "real"
     }
     column {
       name = "RecordId"
@@ -420,6 +512,14 @@ resource "azurerm_monitor_data_collection_rule" "iam_reporting_dcr" {
     column {
       name = "TimeGenerated"
       type = "datetime"
+    }
+    column {
+      name = "IngestedAt"
+      type = "datetime"
+    }
+    column {
+      name = "RiskScore"
+      type = "real"
     }
     column {
       name = "RecordId"
@@ -461,10 +561,10 @@ resource "azurerm_automation_account" "iam_reporting_aa" {
   tags = var.tags
 }
 
-# Grant the Automation Account's Managed Identity access to publish metrics/logs to the DCR
-resource "azurerm_role_assignment" "aa_dcr_publisher" {
+# Grant the Automation Account's Managed Identity access to publish logs to the DCR via the correct modern role
+resource "azurerm_role_assignment" "aa_dcr_data_sender" {
   scope                = azurerm_monitor_data_collection_rule.iam_reporting_dcr.id
-  role_definition_name = "Monitoring Metrics Publisher"
+  role_definition_name = "Monitoring Data Sender"
   principal_id         = azurerm_automation_account.iam_reporting_aa.identity[0].principal_id
 }
 

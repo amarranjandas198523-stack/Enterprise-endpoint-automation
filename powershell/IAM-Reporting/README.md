@@ -11,19 +11,23 @@ This framework was built adhering to strict "Zero Hardcoded Secrets" principles 
     *   Authenticates to Microsoft Graph API securely without stored credentials using its System-Assigned Managed Identity.
     *   Implements fault tolerance including exponential backoff for Microsoft Graph API throttling (HTTP 429).
     *   Retrieves deep IAM metrics:
-        *   **App Governance:** Identification of highly privileged Service Principals with expiring (or expired) certificates or client secrets.
-        *   **PIM Role Drift:** Extraction of Privileged Identity Management metrics, specifically tracking Global Administrators (Active vs Eligible assignments).
-        *   **Identity Protection:** Real-time visibility into high-risk users and high-risk Service Principals.
-    *   Pushes formatted data to Azure Log Analytics via the HTTP Data Collector REST API securely.
-
+        *   **App Governance:** Highly privileged Service Principals with expiring credentials.
+        *   **PIM Role Drift:** Tracking Global Administrators (Active vs Eligible).
+        *   **Identity Protection:** Real-time visibility into high-risk users and Service Principals.
+        *   **Conditional Access:** Tracking policy states and exception groups.
+        *   **Dormant Accounts:** Identifying enabled users inactive for >90 days.
+        *   **Guest User Risk:** Auditing external users.
+        *   **App Consent Anomalies:** Detecting highly privileged OAuth scope grants.
+        *   **Token Lifetime Policies:** Organization defaults and active policies.
+    *   Generates a dynamic **RiskScore** (0-100) per metric to enable intelligent prioritization.
     *   Pushes formatted data securely using the **Modern Azure Monitor Logs Ingestion API** via Data Collection Rules (DCR), authenticating purely via Managed Identity (eliminating legacy Shared Keys).
-    *   Handles **Microsoft Graph API Pagination (`@odata.nextLink`)**, essential for retrieving all data in large enterprise environments.
+    *   Handles **Microsoft Graph API Pagination (`@odata.nextLink`)** and robust throttling/backoff, essential for retrieving all data in large enterprise environments.
 
 2.  **Infrastructure as Code (`terraform/modules/azure_iam_reporting/`)**:
-    *   Provisions the Log Analytics Workspace.
-    *   Provisions the Azure Monitor Data Collection Endpoint (DCE) and Data Collection Rule (DCR) with predefined custom schemas.
+    *   Provisions the protected Log Analytics Workspace (`azurerm_management_lock`).
+    *   Provisions the Azure Monitor Data Collection Endpoint (DCE) and Data Collection Rule (DCR) with predefined custom schemas and `IngestedAt` transformations.
     *   Provisions the Azure Automation Account.
-    *   Configures the Managed Identity and grants it the `Monitoring Metrics Publisher` role securely on the DCR.
+    *   Configures the Managed Identity and grants it the `Monitoring Data Sender` role securely on the DCR.
 
 ## Deployment Steps
 
