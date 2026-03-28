@@ -1,0 +1,81 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Your Cart | India Blooms</title>
+    <link rel="stylesheet" href="css/style.css">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css">
+</head>
+<body>
+    <header>
+        <nav class="navbar">
+            <div class="logo">
+                <a href="index.html"><i class="fas fa-leaf"></i> India Blooms</a>
+            </div>
+            <ul class="nav-links">
+                <li><a href="index.html">Home</a></li>
+                <li><a href="products.html">All Products</a></li>
+            </ul>
+        </nav>
+    </header>
+
+    <main class="container page-content cart-page">
+        <h1 class="page-title">Shopping Cart</h1>
+
+        <div class="cart-container" id="cart-container">
+            <table class="cart-table">
+                <thead>
+                    <tr>
+                        <th>Product</th>
+                        <th>Price (₹)</th>
+                        <th>Quantity</th>
+                        <th>Subtotal</th>
+                        <th>Action</th>
+                    </tr>
+                </thead>
+                <tbody id="cart-items">
+                    <!-- Cart items injected here -->
+                </tbody>
+            </table>
+
+            <div class="cart-summary">
+                <div class="summary-box">
+                    <h3>Order Summary</h3>
+                    <div class="summary-row">
+                        <span>Items Total:</span>
+                        <span id="cart-subtotal">₹0</span>
+                    </div>
+                    <div class="summary-row">
+                        <span>Shipping (Pan India):</span>
+                        <span id="shipping-cost">₹50</span>
+                    </div>
+                    <div class="summary-row total-row">
+                        <span>Total to Pay:</span>
+                        <span id="cart-total">₹0</span>
+                    </div>
+                    <a href="checkout.html" class="btn btn-primary full-width" id="checkout-btn">Proceed to Checkout</a>
+                    <div class="continue-shopping">
+                        <a href="products.html"><i class="fas fa-arrow-left"></i> Continue Shopping</a>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <div id="empty-cart-msg" class="empty-cart hidden">
+            <i class="fas fa-shopping-basket fa-4x empty-icon"></i>
+            <h2>Your cart is empty</h2>
+            <p>Looks like you haven't added any plants or gardening supplies yet.</p>
+            <a href="products.html" class="btn btn-primary">Start Shopping</a>
+        </div>
+    </main>
+
+    <script src="js/main.js"></script>
+    <script>
+        // Specific cart page initialization
+        document.addEventListener('DOMContentLoaded', () => {
+            renderCartPage();
+        });
+    </script>
+</body>
+</html>

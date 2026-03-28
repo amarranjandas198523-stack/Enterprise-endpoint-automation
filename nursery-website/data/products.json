@@ -1,0 +1,110 @@
+[
+  {
+    "id": "1",
+    "name": "Marigold (Genda)",
+    "category": "flowers",
+    "description": "Bright orange and yellow flowers commonly used in Indian festivals and decorations. Very easy to grow.",
+    "price": 50,
+    "image": "https://images.unsplash.com/photo-1598514982205-f36b96d1ea8d?w=500&h=500&fit=crop",
+    "soil_type": "Well-drained loamy soil"
+  },
+  {
+    "id": "2",
+    "name": "Jasmine (Mogra)",
+    "category": "flowers",
+    "description": "Highly fragrant white flowers that bloom primarily in summer. Perfect for gardens and home balconies.",
+    "price": 120,
+    "image": "https://images.unsplash.com/photo-1601002347716-419b660a12e2?w=500&h=500&fit=crop",
+    "soil_type": "Rich, well-draining organic soil"
+  },
+  {
+    "id": "3",
+    "name": "Lotus (Kamal)",
+    "category": "flowers",
+    "description": "The national flower of India. Requires a water garden or a large pot filled with water and clay soil.",
+    "price": 250,
+    "image": "https://images.unsplash.com/photo-1581452140407-7756f10bf8b1?w=500&h=500&fit=crop",
+    "soil_type": "Heavy clay or muddy soil"
+  },
+  {
+    "id": "4",
+    "name": "Hibiscus (Gudhal)",
+    "category": "flowers",
+    "description": "Large, showy flowers available in many colors. Great for offering in prayers and highly medicinal.",
+    "price": 80,
+    "image": "https://images.unsplash.com/photo-1543881512-4d2c8fb404e1?w=500&h=500&fit=crop",
+    "soil_type": "Slightly acidic, moist, well-draining soil"
+  },
+  {
+    "id": "5",
+    "name": "Rose (Desi Gulab)",
+    "category": "flowers",
+    "description": "Classic Indian rose with intense fragrance, often used for making rose water (Gulab Jal).",
+    "price": 100,
+    "image": "https://images.unsplash.com/photo-1496062031456-07b8f162a322?w=500&h=500&fit=crop",
+    "soil_type": "Loamy, well-drained soil rich in organic matter"
+  },
+  {
+    "id": "6",
+    "name": "Sunflower Seeds",
+    "category": "seeds",
+    "description": "High-yield sunflower seeds suitable for Indian summer climates. Packet contains approx 50 seeds.",
+    "price": 40,
+    "image": "https://images.unsplash.com/photo-1599388339192-383792cb002b?w=500&h=500&fit=crop",
+    "soil_type": "Any well-drained soil"
+  },
+  {
+    "id": "7",
+    "name": "Tulsi (Holy Basil) Seeds",
+    "category": "seeds",
+    "description": "Sacred and highly medicinal plant seeds. A must-have in every Indian household.",
+    "price": 30,
+    "image": "https://images.unsplash.com/photo-1596483561633-5c74360e52fc?w=500&h=500&fit=crop",
+    "soil_type": "Loamy and fertile soil"
+  },
+  {
+    "id": "8",
+    "name": "Premium Cocopeat (5kg Block)",
+    "category": "soil",
+    "description": "Expands up to 25 liters. Excellent for seed germination, potting mixes, and retaining moisture.",
+    "price": 200,
+    "image": "https://images.unsplash.com/photo-1416879598555-520baafbf69c?w=500&h=500&fit=crop",
+    "soil_type": "N/A - Potting Medium"
+  },
+  {
+    "id": "9",
+    "name": "Vermicompost (Organic Fertilizer) 2kg",
+    "category": "soil",
+    "description": "100% organic earthworm compost. Boosts plant growth and improves soil texture.",
+    "price": 150,
+    "image": "https://images.unsplash.com/photo-1505691938895-1758d7feb511?w=500&h=500&fit=crop",
+    "soil_type": "N/A - Fertilizer"
+  },
+  {
+    "id": "10",
+    "name": "Neem Oil Spray (Pesticide) 250ml",
+    "category": "chemicals",
+    "description": "Organic, cold-pressed Neem oil spray. Protects plants from aphids, mealybugs, and fungal diseases.",
+    "price": 180,
+    "image": "https://images.unsplash.com/photo-1610444539169-7be85f8f5370?w=500&h=500&fit=crop",
+    "soil_type": "N/A"
+  },
+  {
+    "id": "11",
+    "name": "NPK 19:19:19 Water Soluble Fertilizer",
+    "category": "chemicals",
+    "description": "Balanced chemical fertilizer for overall plant growth, root development, and better blooming.",
+    "price": 120,
+    "image": "https://images.unsplash.com/photo-1584479898061-15742e14f50d?w=500&h=500&fit=crop",
+    "soil_type": "N/A"
+  },
+  {
+    "id": "12",
+    "name": "Terracotta Clay Pot (10 inch)",
+    "category": "pots",
+    "description": "Traditional Indian clay pot, highly porous, prevents root rot and allows roots to breathe.",
+    "price": 90,
+    "image": "https://images.unsplash.com/photo-1517409419131-3dc11a8ea9ab?w=500&h=500&fit=crop",
+    "soil_type": "N/A"
+  }
+]

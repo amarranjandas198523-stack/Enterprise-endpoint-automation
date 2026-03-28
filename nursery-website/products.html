@@ -1,0 +1,70 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>All Products | India Blooms</title>
+    <link rel="stylesheet" href="css/style.css">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css">
+</head>
+<body>
+    <header>
+        <nav class="navbar">
+            <div class="logo">
+                <a href="index.html"><i class="fas fa-leaf"></i> India Blooms</a>
+            </div>
+            <ul class="nav-links">
+                <li><a href="index.html">Home</a></li>
+                <li><a href="products.html">All Products</a></li>
+                <li><a href="products.html?category=flowers">Flowers</a></li>
+                <li><a href="products.html?category=seeds">Seeds</a></li>
+                <li><a href="products.html?category=soil">Soil & Fertilizers</a></li>
+            </ul>
+            <div class="cart-icon">
+                <a href="cart.html">
+                    <i class="fas fa-shopping-cart"></i>
+                    <span id="cart-count">0</span>
+                </a>
+            </div>
+        </nav>
+    </header>
+
+    <main class="container page-content">
+        <h1 class="page-title" id="catalog-title">All Products</h1>
+
+        <!-- Filter Buttons -->
+        <div class="filters">
+            <button class="filter-btn active" data-filter="all">All</button>
+            <button class="filter-btn" data-filter="flowers">Flowers</button>
+            <button class="filter-btn" data-filter="seeds">Seeds</button>
+            <button class="filter-btn" data-filter="soil">Soil</button>
+            <button class="filter-btn" data-filter="chemicals">Pesticides/Chemicals</button>
+            <button class="filter-btn" data-filter="pots">Pots</button>
+        </div>
+
+        <div class="product-grid" id="product-grid">
+            <!-- Products will be injected here by JS -->
+            <div class="loader">Loading amazing plants...</div>
+        </div>
+
+        <!-- Product Modal for Detail View -->
+        <div id="product-modal" class="modal">
+            <div class="modal-content">
+                <span class="close-modal">&times;</span>
+                <div class="modal-body" id="modal-product-details">
+                    <!-- Modal content injected here -->
+                </div>
+            </div>
+        </div>
+
+    </main>
+
+    <footer>
+        <div class="footer-bottom">
+            <p>&copy; 2023 India Blooms Nursery. All rights reserved.</p>
+        </div>
+    </footer>
+
+    <script src="js/main.js"></script>
+</body>
+</html>

@@ -1,0 +1,138 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Secure Checkout | India Blooms</title>
+    <link rel="stylesheet" href="css/style.css">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css">
+</head>
+<body>
+    <header>
+        <nav class="navbar">
+            <div class="logo">
+                <a href="index.html"><i class="fas fa-leaf"></i> India Blooms Secure Checkout</a>
+            </div>
+            <ul class="nav-links">
+                <li><a href="cart.html">Back to Cart</a></li>
+            </ul>
+        </nav>
+    </header>
+
+    <main class="container page-content checkout-page">
+        <h1 class="page-title">Checkout</h1>
+
+        <div class="checkout-grid">
+            <!-- Left Side: Form -->
+            <div class="checkout-form-container">
+                <form id="checkout-form">
+                    <h2>1. Delivery Information</h2>
+                    <div class="form-group">
+                        <label for="fullName">Full Name</label>
+                        <input type="text" id="fullName" required placeholder="Ramesh Kumar">
+                    </div>
+                    <div class="form-row">
+                        <div class="form-group">
+                            <label for="phone">WhatsApp Number</label>
+                            <input type="tel" id="phone" required placeholder="10-digit number">
+                        </div>
+                        <div class="form-group">
+                            <label for="email">Email Address</label>
+                            <input type="email" id="email" required placeholder="ramesh@example.com">
+                        </div>
+                    </div>
+                    <div class="form-group">
+                        <label for="address">Full Delivery Address (Street, House No.)</label>
+                        <textarea id="address" rows="3" required placeholder="House No 123, Rose Garden Colony..."></textarea>
+                    </div>
+                    <div class="form-row">
+                        <div class="form-group">
+                            <label for="city">City</label>
+                            <input type="text" id="city" required placeholder="New Delhi">
+                        </div>
+                        <div class="form-group">
+                            <label for="state">State</label>
+                            <select id="state" required>
+                                <option value="" disabled selected>Select State</option>
+                                <option value="Delhi">Delhi</option>
+                                <option value="Maharashtra">Maharashtra</option>
+                                <option value="Karnataka">Karnataka</option>
+                                <option value="Tamil Nadu">Tamil Nadu</option>
+                                <option value="Gujarat">Gujarat</option>
+                                <option value="Uttar Pradesh">Uttar Pradesh</option>
+                                <option value="Other">Other</option>
+                            </select>
+                        </div>
+                        <div class="form-group">
+                            <label for="pincode">PIN Code</label>
+                            <input type="text" id="pincode" required pattern="[0-9]{6}" placeholder="110001">
+                        </div>
+                    </div>
+
+                    <h2>2. Payment Method</h2>
+                    <div class="payment-methods">
+                        <label class="payment-option">
+                            <input type="radio" name="payment" value="cod" checked>
+                            <i class="fas fa-money-bill-wave"></i> Cash on Delivery (COD)
+                        </label>
+                        <label class="payment-option">
+                            <input type="radio" name="payment" value="upi">
+                            <i class="fas fa-qrcode"></i> UPI (GPay/PhonePe/Paytm)
+                        </label>
+                        <label class="payment-option">
+                            <input type="radio" name="payment" value="whatsapp">
+                            <i class="fab fa-whatsapp"></i> Bill on WhatsApp
+                        </label>
+                    </div>
+
+                    <!-- Stubbed UPI UI -->
+                    <div id="upi-details" class="hidden upi-section">
+                        <p>Scan the QR code below using any UPI app to pay the exact amount shown in your summary.</p>
+                        <img src="https://upload.wikimedia.org/wikipedia/commons/d/d0/QR_code_for_mobile_English_Wikipedia.svg" alt="UPI QR Code" class="qr-code">
+                        <p><strong>UPI ID:</strong> indiablooms@ybl</p>
+                        <div class="form-group">
+                            <label for="transactionId">Enter UPI Transaction ID (Reference No.)</label>
+                            <input type="text" id="transactionId" placeholder="E.g., 301234567890">
+                        </div>
+                    </div>
+
+                    <button type="submit" class="btn btn-primary full-width submit-btn">Confirm Order</button>
+                </form>
+            </div>
+
+            <!-- Right Side: Order Summary -->
+            <div class="checkout-summary">
+                <h3>Order Summary</h3>
+                <div class="checkout-items" id="checkout-items">
+                    <!-- Items injected here -->
+                </div>
+                <div class="checkout-totals">
+                    <div class="total-row">
+                        <span>Items Total:</span>
+                        <span id="checkout-subtotal">₹0</span>
+                    </div>
+                    <div class="total-row">
+                        <span>Shipping:</span>
+                        <span id="checkout-shipping">₹50</span>
+                    </div>
+                    <div class="total-row final-total">
+                        <span>Grand Total:</span>
+                        <span id="checkout-total">₹0</span>
+                    </div>
+                </div>
+                <div class="secure-badge">
+                    <i class="fas fa-lock"></i> 100% Secure Checkout
+                </div>
+            </div>
+        </div>
+    </main>
+
+    <script src="js/main.js"></script>
+    <script src="js/checkout.js"></script>
+    <script>
+        document.addEventListener('DOMContentLoaded', () => {
+            renderCheckoutSummary();
+        });
+    </script>
+</body>
+</html>
